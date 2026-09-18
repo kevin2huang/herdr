@@ -909,6 +909,45 @@ mod tests {
     }
 
     #[test]
+    fn pane_border_titles_use_filled_contrasting_styles() {
+        for (focused, expected_bg, expected_fg) in [
+            (true, Color::Rgb(169, 220, 118), Color::Rgb(0, 0, 0)),
+            (false, Color::Rgb(91, 89, 92), Color::Rgb(255, 255, 255)),
+        ] {
+            let mut app = AppState::test_new();
+            app.palette.accent = Color::Rgb(169, 220, 118);
+            app.palette.overlay0 = Color::Rgb(91, 89, 92);
+            app.view.terminal_area = Rect::new(0, 0, 12, 3);
+            let ws = Workspace::test_new("test");
+            let pane_id = ws.tabs[0].root_pane;
+            app.view.pane_infos = vec![PaneInfo {
+                id: pane_id,
+                rect: Rect::new(0, 0, 12, 3),
+                inner_rect: Rect::default(),
+                scrollbar_rect: None,
+                borders: Borders::ALL,
+                is_focused: focused,
+            }];
+            let terminal_id = ws.tabs[0].panes[&pane_id].attached_terminal_id.clone();
+            let mut terminal_state = TerminalState::new(terminal_id.clone(), "/tmp".into());
+            terminal_state.set_manual_label("notes".into());
+            app.terminals.insert(terminal_id, terminal_state);
+
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(12, 3)).unwrap();
+            terminal
+                .draw(|frame| render_view_pane_borders(&app, &ws, &[], frame))
+                .unwrap();
+
+            let title = &terminal.backend().buffer()[(1, 0)];
+            assert_eq!(title.symbol(), " ");
+            assert_eq!(title.style().bg, Some(expected_bg));
+            assert_eq!(title.style().fg, Some(expected_fg));
+            assert_eq!(title.style().add_modifier.contains(Modifier::BOLD), focused);
+        }
+    }
+
+    #[test]
     fn pane_border_renderer_places_adjacent_cjk_by_display_width() {
         let mut app = AppState::test_new();
         app.view.terminal_area = Rect::new(0, 0, 12, 3);
