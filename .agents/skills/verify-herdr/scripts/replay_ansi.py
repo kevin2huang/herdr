@@ -12,6 +12,7 @@ def main():
         description="Replay captured ANSI in a disposable terminal. Press q to exit."
     )
     parser.add_argument("capture", type=Path)
+    parser.add_argument("--title")
     args = parser.parse_args()
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         parser.error("run in a disposable interactive terminal, not a pipe")
@@ -23,6 +24,8 @@ def main():
         tty.setraw(fd)
         sys.stdout.buffer.write(b"\x1b[?1049h\x1b[0m\x1b[48;2;34;31;34m\x1b[2J\x1b[H")
         sys.stdout.buffer.write(capture + b"\x1b[?25l")
+        if args.title:
+            sys.stdout.buffer.write(f"\x1b]0;{args.title}\x07".encode())
         sys.stdout.flush()
         while True:
             data = os.read(fd, 1024)

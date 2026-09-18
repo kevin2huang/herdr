@@ -23,14 +23,15 @@ In the September 2026 Ghostty reproduction, cells were 17 by 36 pixels. The side
 
 ## Test representations in the host terminal
 
-Run the probe in a disposable terminal window at least 80 columns by 26 rows. Do not send it into an agent pane or the user's attached Herdr client.
+Render the probe in a managed Ghostty window at least 80 columns by 26 rows. Do not send it into an agent pane or the user's attached Herdr client.
 
 ```bash
 python3 /path/to/verify-herdr/scripts/border_probe.py > /tmp/herdr-border-probe.ansi
-python3 /path/to/verify-herdr/scripts/replay_ansi.py /tmp/herdr-border-probe.ansi
+python3 /path/to/verify-herdr/scripts/capture_ghostty.py \
+  /tmp/herdr-border-probe.ansi /tmp/herdr-border-probe.png
 ```
 
-Capture the window before pressing `q` to exit. Inspect the corners as well as straight edges.
+Inspect the PNG's corners and straight edges. Require its adjacent `.png.json` record to report `closed and absent` or `already absent` for `cleanup_status`.
 
 | Candidate | What to check |
 | --- | --- |
@@ -58,15 +59,19 @@ Ghostty/macOS's default sRGB text path converts colors to Display P3, while its 
 
 ## Replay the real client capture
 
-After `pane-backgrounds` passes, replay its bytes in the same host terminal:
+After `pane-backgrounds` passes, capture its bytes in a managed host window:
 
 ```bash
-python3 /path/to/verify-herdr/scripts/replay_ansi.py /tmp/herdr-pane-background-proof/sidebar/raw.ansi
+python3 /path/to/verify-herdr/scripts/capture_ghostty.py \
+  /tmp/herdr-pane-background-proof/sidebar/raw.ansi \
+  /tmp/herdr-pane-background-proof/sidebar/native.png
 ```
 
-Use only captures from the isolated verifier. ANSI can include terminal commands, not just text. Keep the host grid at least as large as the recorded grid. The replay helper enters raw mode so terminal query responses do not echo into the picture, then restores the terminal on exit.
+Use only captures from the isolated verifier. ANSI can include terminal commands, not just text. Keep the host grid at least as large as the recorded grid and inspect the PNG for cropping. The helper does not resize the host window. Its replay child enters raw mode so terminal query responses do not echo into the picture.
 
-On macOS, capture the owned preview window directly with `screencapture -x -o -l <window-id> screenshot.png`. Resolve its current numeric Core Graphics window ID; Ghostty's AppleScript window ID is not interchangeable. A full-desktop capture can show the lock screen instead of the preview. Open the result and confirm it contains the fixture before measuring it. Direct window captures can use a different color profile, so compare image and text colors within the same capture.
+The helper resolves the numeric Core Graphics window ID and calls `screencapture -x -o -l` on that window. Ghostty's AppleScript window ID is not interchangeable. A full-desktop capture can show the lock screen instead of the preview. Open the result and confirm it contains the fixture before measuring it. Direct window captures can use a different color profile, so compare image and text colors within the same capture.
+
+The helper closes its exact window in `finally`, including after capture failure, SIGINT, and SIGTERM. Require the JSON ownership record to confirm that the window is absent. Neither replay PID exit nor a manual `q` proves window cleanup. If cleanup fails, report the recorded IDs and inspect that exact window. Never close by title or send input to an unowned terminal. SIGKILL and host crashes require recovery from those IDs.
 
 A capture taken after a focus change or resize can contain only image placements. A fresh terminal also needs the earlier image uploads. For `line_tabs_keep_panel_background_and_follow_focus`, replay `tabs/replay/raw.ansi`, which includes the initial uploads and subsequent updates. The individual `narrow`, `focused-second`, and `wide` captures are frame updates, not standalone sessions.
 
