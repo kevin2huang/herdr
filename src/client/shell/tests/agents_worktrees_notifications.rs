@@ -432,6 +432,90 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
 }
 
 #[test]
+fn expanded_sidebar_row_gaps_are_blank_and_compact_rows_stay_adjacent() {
+    let mut projected = snapshot();
+    let mut second_workspace = projected.workspaces[0].clone();
+    second_workspace.workspace_id = "ws_2".into();
+    second_workspace.active_tab_id = "tab_2".into();
+    second_workspace.number = 2;
+    second_workspace.label = "second".into();
+    second_workspace.branch = Some("feature/sidebar".into());
+    second_workspace.focused = false;
+    projected.workspaces.push(second_workspace);
+    projected.agents = [
+        ("pane_1", "ws_1", "pi", true),
+        ("pane_2", "ws_2", "claude", false),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(
+        |(index, (pane_id, workspace_id, provider, focused))| ClientShellAgent {
+            pane_id: pane_id.into(),
+            workspace_id: workspace_id.into(),
+            tab_id: format!("tab_{}", index + 1),
+            name: Some(provider.into()),
+            display_agent: None,
+            agent: Some(provider.into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Idle,
+            state_change_seq: index as u64,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused,
+        },
+    )
+    .collect();
+    let mut config = Config::default();
+    config.ui.sidebar.spaces.row_gap = 1;
+    config.ui.sidebar.agents.row_gap = 1;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let frame = state.compose(106, 30).expect("expanded sidebar frame");
+    assert!(frame_rows(&frame).join("\n").contains(" main"));
+    let workspace_gap = state.hits.workspaces[0].rect.bottom();
+    assert_eq!(state.hits.workspaces[1].rect.y, workspace_gap + 1);
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .all(|hit| workspace_gap < hit.rect.top() || workspace_gap >= hit.rect.bottom()));
+    let agent_gap = state.hits.agents[0].0.bottom();
+    assert_eq!(state.hits.agents[1].0.y, agent_gap + 1);
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .all(|(rect, _)| agent_gap < rect.top() || agent_gap >= rect.bottom()));
+    for (body, gap_row) in [
+        (state.hits.workspace_body, workspace_gap),
+        (state.hits.agent_body, agent_gap),
+    ] {
+        for x in body.x..body.right() {
+            assert_eq!(frame.cells[usize::from(gap_row * 106 + x)].symbol, " ");
+        }
+        let click = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: body.x,
+            row: gap_row,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        assert!(click.actions.is_empty());
+    }
+
+    state.sidebar_collapsed = true;
+    state.compose(106, 30).expect("compact sidebar frame");
+    assert_eq!(
+        state.hits.workspaces[1].rect.y,
+        state.hits.workspaces[0].rect.bottom()
+    );
+    assert_eq!(state.hits.agents[1].0.y, state.hits.agents[0].0.bottom());
+}
+
+#[test]
 fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     let mut projected = snapshot();
     let mut second_pane = projected.panes[0].clone();
@@ -476,6 +560,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Priority;
     config.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
     config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+    config.ui.sidebar.agents.row_gap = 1;
     config.ui.sidebar.agents.rows_by_agent.insert(
         "pi".into(),
         vec![

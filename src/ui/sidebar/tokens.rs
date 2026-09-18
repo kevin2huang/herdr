@@ -536,6 +536,126 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         );
     }
 
+    fn rendered_text(tokens: &[ResolvedToken], max_width: usize) -> String {
+        super::super::resolved_token_spans(
+            tokens,
+            ("*", Default::default()),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            &super::super::Palette::catppuccin(),
+            max_width,
+        )
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
+    }
+
+    #[test]
+    fn branch_renders_with_git_icon_across_labels_and_widths() {
+        for (branch, width, expected) in [
+            ("main", 20, " main"),
+            ("feature/sidebar-icon", 10, " feature…"),
+            ("功能分支", 7, " 功能…"),
+            ("\u{301}", 1, ""),
+            ("\u{301}", 20, ""),
+        ] {
+            let tokens = [ResolvedToken::unstyled(ResolvedTokenKind::Branch(
+                branch.into(),
+            ))];
+            assert_eq!(rendered_text(&tokens, width), expected);
+        }
+
+        let branch = [ResolvedToken::unstyled(ResolvedTokenKind::Branch(
+            "main".into(),
+        ))];
+        for width in 0..3 {
+            assert_eq!(rendered_text(&branch, width), "");
+        }
+        assert_eq!(rendered_text(&branch, 3), " …");
+    }
+
+    #[test]
+    fn branch_and_git_status_share_the_width_budget() {
+        let tokens = [
+            ResolvedToken::unstyled(ResolvedTokenKind::Branch("main".into())),
+            ResolvedToken::unstyled(ResolvedTokenKind::GitStatus {
+                ahead: 2,
+                behind: 1,
+            }),
+        ];
+
+        assert_eq!(rendered_text(&tokens, 9), " … ↑2 ↓1");
+        assert_eq!(rendered_text(&tokens, 8), "↑2 ↓1");
+    }
+
+    #[test]
+    fn missing_empty_suppressed_and_hidden_branches_leave_no_decoration() {
+        let config: SpacesSidebarConfig = toml::from_str(
+            r#"rows = [["workspace", { token = "branch", rules = [{ equals = "hidden", hide = true }] }]]"#,
+        )
+        .unwrap();
+        let tokens = std::collections::HashMap::new();
+
+        for (branch, suppress_git_details) in [
+            (None, false),
+            (Some(""), false),
+            (Some("main"), true),
+            (Some("hidden"), false),
+        ] {
+            let rows = space_rows(
+                &config,
+                SpaceTokenContext {
+                    workspace: "repo",
+                    branch,
+                    state_text: "idle",
+                    ahead_behind: None,
+                    tokens: &tokens,
+                    suppress_git_details,
+                },
+            );
+            assert_eq!(rendered_text(&rows[0], 20), "repo");
+        }
+    }
+
+    #[test]
+    fn branch_icon_and_label_use_the_patched_secondary_style() {
+        use ratatui::style::{Color, Modifier, Style};
+
+        let config: SpacesSidebarConfig =
+            toml::from_str(r##"rows = [[{ token = "branch", fg = "#ff0000", bold = true }]]"##)
+                .unwrap();
+        let rows = space_rows(
+            &config,
+            SpaceTokenContext {
+                workspace: "repo",
+                branch: Some("main"),
+                state_text: "idle",
+                ahead_behind: None,
+                tokens: &std::collections::HashMap::new(),
+                suppress_git_details: false,
+            },
+        );
+        let spans = super::super::resolved_token_spans(
+            &rows[0],
+            ("*", Style::default()),
+            Style::default(),
+            Style::default(),
+            Style::default().fg(Color::Blue),
+            Style::default(),
+            &super::super::Palette::catppuccin(),
+            20,
+        );
+
+        assert_eq!(rendered_text(&rows[0], 20), " main");
+        assert_eq!(spans.len(), 2);
+        for span in spans {
+            assert_eq!(span.style.fg, Some(Color::Rgb(255, 0, 0)));
+            assert!(span.style.add_modifier.contains(Modifier::BOLD));
+        }
+    }
+
     #[test]
     fn grouped_children_suppress_all_builtin_git_details() {
         let config = SpacesSidebarConfig::default();

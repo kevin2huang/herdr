@@ -768,11 +768,13 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     third.workspace_id = "ws_3".into();
     third.number = 3;
     third.label = "third-workspace".into();
+    third.branch = Some("endpoint-branch".into());
     third.worktree = None;
     remote.workspaces.push(third);
     state.set_endpoint_snapshot(&remote_id, Box::new(remote));
 
-    state.compose(100, 40).expect("combined endpoint frame");
+    let frame = state.compose(100, 40).expect("combined endpoint frame");
+    assert!(frame_rows(&frame).join("\n").contains(" endpoint-branch"));
     let local_workspaces = state
         .hits
         .workspaces

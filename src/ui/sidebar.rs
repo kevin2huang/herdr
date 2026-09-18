@@ -103,6 +103,8 @@ pub(crate) fn agent_panel_entries_from(
     entries
 }
 
+const GIT_BRANCH_PREFIX: &str = " ";
+
 pub(crate) fn resolved_token_spans(
     resolved: &[ResolvedToken],
     state_icon: (&str, Style),
@@ -117,6 +119,7 @@ pub(crate) fn resolved_token_spans(
         .iter()
         .map(|token| match &token.kind {
             ResolvedTokenKind::StateIcon => display_width(state_icon.0),
+            ResolvedTokenKind::Branch(_) => display_width(GIT_BRANCH_PREFIX),
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
                     + usize::from(*behind > 0) * display_width(&format!("↓{behind}"))
@@ -156,7 +159,11 @@ pub(crate) fn resolved_token_spans(
             .sum::<usize>();
         content + separators
     };
-    let mut active = resolved.iter().map(|_| true).collect::<Vec<_>>();
+    let mut active = resolved
+        .iter()
+        .zip(&flexible_widths)
+        .map(|(token, width)| !matches!(token.kind, ResolvedTokenKind::Branch(_)) || *width > 0)
+        .collect::<Vec<_>>();
     if minimum_width(&active) > max_width {
         for (index, width) in flexible_widths.iter().enumerate() {
             if *width > 0 {
@@ -238,11 +245,15 @@ pub(crate) fn resolved_token_spans(
             ResolvedTokenKind::Machine(text)
             | ResolvedTokenKind::Tab(text)
             | ResolvedTokenKind::Pane(text)
-            | ResolvedTokenKind::Agent(text)
-            | ResolvedTokenKind::Branch(text) => spans.push(Span::styled(
+            | ResolvedTokenKind::Agent(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
                 apply_token_style(secondary_style, token.style),
             )),
+            ResolvedTokenKind::Branch(text) => {
+                let style = apply_token_style(secondary_style, token.style);
+                spans.push(Span::styled(GIT_BRANCH_PREFIX, style));
+                spans.push(Span::styled(truncate_end(text, budgets[index]), style));
+            }
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 if *ahead > 0 {
                     spans.push(Span::styled(
