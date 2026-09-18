@@ -67,6 +67,7 @@ fn layout(panes: &[PaneSurfacePane], active_tab: Option<Rect>) -> ChromeLayout<'
     ChromeLayout {
         panes,
         pane_area: Rect::default(),
+        sidebar: None,
         active_tab,
     }
 }
@@ -312,6 +313,54 @@ fn border_pixels(row: &BorderRow) -> (usize, Vec<u8>) {
     let mut pixels = vec![0; reader.output_buffer_size()];
     let info = reader.next_frame(&mut pixels).unwrap();
     (info.width as usize, pixels)
+}
+
+#[test]
+fn sidebar_rows_use_sidebar_interior_and_remain_independent_of_pane_colors() {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 12, 6));
+    let mut palette = fixture(0).2;
+    palette.sidebar_bg = Color::Rgb(45, 40, 55);
+    palette.pane_default_bg = Color::Reset;
+    buffer.set_style(buffer.area, Style::default().bg(palette.pane_gap_bg));
+    super::super::render::render_sidebar_frame(&mut buffer, Rect::new(1, 0, 5, 6), &palette);
+    let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
+    let sidebar_background = crate::protocol::color_to_u32(palette.sidebar_bg);
+    for (x, y) in [(1, 0), (1, 1), (3, 3), (5, 4), (5, 5)] {
+        assert_eq!(frame.cells[y * 12 + x].bg, sidebar_background);
+    }
+    assert_eq!(frame.cells[1].symbol, "🭽");
+    assert_eq!(frame.cells[5].symbol, "🭾");
+    let mut frames = PaneFrames::default();
+    frames.set_scope("sidebar");
+    let bytes = frames.compose(
+        &mut frame,
+        ChromeLayout {
+            panes: &[],
+            pane_area: Rect::default(),
+            sidebar: Some(Rect::new(1, 0, 5, 6)),
+            active_tab: None,
+        },
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+
+    assert_eq!(
+        bytes.windows(5).filter(|bytes| *bytes == b"a=t,t").count(),
+        2
+    );
+    assert_eq!(frames.rows.len(), 2);
+    for row in &frames.rows {
+        let ChromeRow::Border(row) = row else {
+            panic!("sidebar chrome row must be a border");
+        };
+        assert_eq!(row.inside, [45, 40, 55]);
+        assert_eq!(row.outside, [34, 31, 34]);
+        assert_eq!(row.stroke, [91, 89, 92]);
+        assert_eq!(row.title_span, None);
+    }
+    assert_eq!(frame.cells[1].symbol, " ");
+    assert_eq!(frame.cells[5].symbol, " ");
 }
 
 #[test]
@@ -582,39 +631,58 @@ fn rounded_border_strips_cut_out_corners_and_join_straight_edges() {
     }
 }
 
+fn cached_profile_fixture(
+    count: usize,
+) -> (FrameData, Vec<PaneSurfacePane>, Palette, Rect, Rect, Rect) {
+    let (pane_frame, panes, palette) = fixture(count);
+    let sidebar = Rect::new(1, 0, 20, 40);
+    let pane_area = Rect::new(22, 0, 120, 40);
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 142, 40));
+    buffer.set_style(buffer.area, Style::default().bg(palette.pane_gap_bg));
+    super::super::render::render_sidebar_frame(&mut buffer, sidebar, &palette);
+    let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
+    for y in 0..40_usize {
+        for x in 0..120_usize {
+            frame.cells[y * 142 + 22 + x] = pane_frame.cells[y * 120 + x].clone();
+        }
+    }
+    (
+        frame,
+        panes,
+        palette,
+        sidebar,
+        pane_area,
+        Rect::new(30, 0, 8, 1),
+    )
+}
+
 #[test]
 #[ignore]
 fn pixel_pane_frame_render_scale_profile() {
     for count in [1, 15] {
-        let (original, panes, palette) = fixture(count);
+        let (original, panes, palette, sidebar, pane_area, active_tab) =
+            cached_profile_fixture(count);
         let mut frames = PaneFrames::default();
         frames.set_scope("benchmark");
         let occlusion = surface::Occlusion::default();
-        let active_tab = Some(Rect::new(8, 0, 8, 1));
-        frames.compose(
-            &mut original.clone(),
-            layout(&panes, active_tab),
-            CELL,
-            &palette,
-            &occlusion,
-        );
+        let chrome = || ChromeLayout {
+            panes: &panes,
+            pane_area,
+            sidebar: Some(sidebar),
+            active_tab: Some(active_tab),
+        };
+        frames.compose(&mut original.clone(), chrome(), CELL, &palette, &occlusion);
         let mut samples = Vec::new();
         for _ in 0..101 {
             let mut frame = original.clone();
             let start = std::time::Instant::now();
-            let bytes = frames.compose(
-                &mut frame,
-                layout(&panes, active_tab),
-                CELL,
-                &palette,
-                &occlusion,
-            );
+            let bytes = frames.compose(&mut frame, chrome(), CELL, &palette, &occlusion);
             samples.push(start.elapsed().as_micros());
             assert!(!bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
         }
         samples.sort_unstable();
         eprintln!(
-            "cached pixel borders and tab underline: {count} panes, median {} us/frame",
+            "cached pixel borders, sidebar, and tab underline: {count} panes, median {} us/frame",
             samples[50]
         );
     }

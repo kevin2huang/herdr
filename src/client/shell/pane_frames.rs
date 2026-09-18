@@ -46,6 +46,7 @@ enum ChromeRow {
 pub(super) struct ChromeLayout<'a> {
     pub(super) panes: &'a [PaneSurfacePane],
     pub(super) pane_area: Rect,
+    pub(super) sidebar: Option<Rect>,
     pub(super) active_tab: Option<Rect>,
 }
 
@@ -244,17 +245,27 @@ impl PaneFrames {
         {
             return self.cleanup();
         }
-        let mut rows = Vec::with_capacity(layout.panes.len() * 2 + 1);
-        if let (Color::Rgb(ir, ig, ib), Color::Rgb(or, og, ob)) =
-            (palette.pane_default_bg, palette.pane_gap_bg)
-        {
-            for pane in layout.panes {
-                let rect = Rect::new(
-                    layout.pane_area.x.saturating_add(pane.rect.x),
-                    layout.pane_area.y.saturating_add(pane.rect.y),
-                    pane.rect.width,
-                    pane.rect.height,
-                );
+        let mut rows = Vec::with_capacity(layout.panes.len() * 2 + 3);
+        if let Color::Rgb(or, og, ob) = palette.pane_gap_bg {
+            let sidebar = layout
+                .sidebar
+                .into_iter()
+                .map(|rect| (rect, palette.sidebar_bg));
+            let panes = layout.panes.iter().map(|pane| {
+                (
+                    Rect::new(
+                        layout.pane_area.x.saturating_add(pane.rect.x),
+                        layout.pane_area.y.saturating_add(pane.rect.y),
+                        pane.rect.width,
+                        pane.rect.height,
+                    ),
+                    palette.pane_default_bg,
+                )
+            });
+            for (rect, inside) in sidebar.chain(panes) {
+                let Color::Rgb(ir, ig, ib) = inside else {
+                    continue;
+                };
                 if rect.width < 2
                     || rect.height < 2
                     || rect.right() > frame.width

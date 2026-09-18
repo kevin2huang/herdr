@@ -173,7 +173,7 @@ fn desktop_composition_keeps_shell_outside_origin_relative_surface() {
     assert!(!text.contains("1 1"));
     assert_eq!(
         frame.cursor.as_ref().map(|cursor| (cursor.x, cursor.y)),
-        Some((27, 2))
+        Some((28, 2))
     );
 }
 
@@ -955,7 +955,8 @@ fn sidebar_scrollbars_use_proportional_shared_geometry_and_drag() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(projected));
     state.set_pane_surface(surface());
-    state.compose(106, 20).expect("overflowing sidebars");
+    state.compose(106, 22).expect("overflowing sidebars");
+    assert_eq!(state.hits.agent_body.height, 6);
 
     for agent in [false, true] {
         let (track, metrics) = if agent {

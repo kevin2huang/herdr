@@ -69,7 +69,7 @@ case "$command_name" in
     HERDR_VISUAL_EVIDENCE_DIR="$evidence_dir" ZIG="$zig_bin" cargo test --locked \
       --test client_mode named_stacked_panes_emit_filled_title_styles_and_pixel_uploads \
       -- --exact --nocapture --test-threads=1 2>&1 | tee -a "$evidence_dir/visual.log"
-    for artifact in raw.ansi streaming.ansi screen.txt config.toml census.txt unit.log visual.log sidebar/raw.ansi sidebar/census.txt single-pane/raw.ansi named-panes/raw.ansi named-panes/screen.txt named-panes/config.toml; do
+    for artifact in raw.ansi streaming.ansi screen.txt config.toml census.txt unit.log visual.log sidebar/raw.ansi sidebar/interaction.ansi sidebar/census.txt single-pane/raw.ansi named-panes/raw.ansi named-panes/screen.txt named-panes/config.toml; do
       [[ -f "$evidence_dir/$artifact" ]] || { echo "error: missing evidence $artifact" >&2; exit 1; }
     done
     echo "pane background verification passed"

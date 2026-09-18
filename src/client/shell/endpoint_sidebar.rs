@@ -20,7 +20,6 @@ pub(super) fn render_collapsed(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    super::render::render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = super::sidebar::collapsed_sidebar_sections(area);
     let mut total_rows = 0usize;
     let mut selected_row = None;
@@ -223,12 +222,6 @@ pub(super) fn render_expanded(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    super::render::render_sidebar_background(buffer, area, palette);
-    hits.sidebar_divider = if area.is_empty() {
-        Rect::default()
-    } else {
-        Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
-    };
     let (workspace_area, detail_area) =
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
@@ -498,13 +491,13 @@ pub(super) fn render_expanded(
     }
 
     let footer_y = workspace_area.bottom().saturating_sub(1);
-    if config.mouse_capture {
+    if config.mouse_capture && workspace_area.height > WORKSPACE_HEADER_ROWS {
         let label = format!(" new · {}", active_endpoint_label(state));
         hits.new_workspace = Rect::new(
             workspace_area.x,
             footer_y,
             display_width(&label).min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
+            1,
         );
         put_text(
             buffer,

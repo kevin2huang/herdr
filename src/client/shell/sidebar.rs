@@ -5,14 +5,22 @@ use ratatui::{
 };
 
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
-    area: Rect,
+    content: Rect,
 ) -> (Rect, Option<u16>, Rect) {
-    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return (Rect::default(), None, Rect::default());
     }
     if content.height < 7 {
-        return (content, None, Rect::default());
+        return (
+            Rect::new(
+                content.x,
+                content.y,
+                content.width,
+                content.height.saturating_sub(1),
+            ),
+            None,
+            Rect::default(),
+        );
     }
     let workspace_height = content.height.div_ceil(2);
     let divider_y = content.y + workspace_height;
@@ -33,7 +41,6 @@ pub(crate) fn render_collapsed_sidebar(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    render_sidebar_background(buffer, area, palette);
     let (workspace_area, divider_y, detail_area) = collapsed_sidebar_sections(area);
     for (index, workspace) in snapshot
         .workspaces
@@ -189,12 +196,6 @@ pub(crate) fn render_sidebar(
     hits: &mut ShellHitMap,
 ) {
     let palette = &config.palette;
-    render_sidebar_background(buffer, area, palette);
-    hits.sidebar_divider = if area.is_empty() {
-        Rect::default()
-    } else {
-        Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
-    };
     let (workspace_area, detail_area) =
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
@@ -360,13 +361,8 @@ pub(crate) fn render_sidebar(
     }
 
     let footer_y = workspace_area.bottom().saturating_sub(1);
-    if config.mouse_capture {
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            5.min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
+    if config.mouse_capture && workspace_area.height > WORKSPACE_HEADER_ROWS {
+        hits.new_workspace = Rect::new(workspace_area.x, footer_y, 5.min(workspace_area.width), 1);
         put_text(
             buffer,
             workspace_area.x,
@@ -384,12 +380,14 @@ pub(crate) fn render_sidebar(
             1,
         );
         if attention {
-            let start_x = workspace_area.right().saturating_sub(6);
+            let attention_width = launcher_width.min(6);
+            let attention_x = workspace_area.right().saturating_sub(attention_width);
+            let marker_width = attention_width.min(2);
             put_text(
                 buffer,
-                start_x,
+                attention_x,
                 footer_y,
-                2,
+                marker_width,
                 "● ",
                 Style::default()
                     .fg(palette.accent)
@@ -397,9 +395,9 @@ pub(crate) fn render_sidebar(
             );
             put_text(
                 buffer,
-                start_x.saturating_add(2),
+                attention_x.saturating_add(marker_width),
                 footer_y,
-                4,
+                attention_width.saturating_sub(marker_width),
                 "menu",
                 Style::default().fg(palette.overlay0),
             );

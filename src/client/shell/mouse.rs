@@ -11,7 +11,14 @@ impl ClientShellState {
             self.config.sidebar_max_width,
         )
         .unwrap_or((18, 36));
-        let width = column.saturating_add(1).clamp(min, max);
+        let sidebar_x = self
+            .last_composed_size
+            .map(|(cols, rows)| self.layout(cols, rows).sidebar.x)
+            .unwrap_or_default();
+        let width = column
+            .saturating_sub(sidebar_x)
+            .saturating_add(1)
+            .clamp(min, max);
         if self.sidebar_width != width {
             self.sidebar_width = width;
             self.sidebar_width_manual = true;
@@ -22,11 +29,14 @@ impl ClientShellState {
     }
 
     fn set_sidebar_section_from_row(&mut self, row: u16, outcome: &mut ClientShellInput) {
-        let divider = self.hits.sidebar_divider;
-        if divider.height == 0 {
+        let content = self
+            .last_composed_size
+            .map(|(cols, rows)| super::render::sidebar_content(self.layout(cols, rows).sidebar))
+            .unwrap_or_default();
+        if content.height == 0 {
             return;
         }
-        let ratio = row.saturating_sub(divider.y) as f32 / divider.height as f32;
+        let ratio = row.saturating_sub(content.y) as f32 / content.height as f32;
         let ratio = ratio.clamp(0.1, 0.9);
         if (self.sidebar_section_split - ratio).abs() > f32::EPSILON {
             self.sidebar_section_split = ratio;

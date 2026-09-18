@@ -33,6 +33,38 @@ impl ClientShellState {
         };
     }
 
+    pub(super) fn compose_unavailable_graphics(
+        &mut self,
+        frame: &mut FrameData,
+        sidebar: Option<Rect>,
+        occlusion: &crate::kitty_graphics::surface::Occlusion,
+    ) {
+        frame.graphics = self.graphics.encode(
+            crate::kitty_graphics::surface::Visibility::Hidden,
+            (0, 0),
+            None,
+            self.graphics_cell_size,
+            occlusion,
+        );
+        if !self.config.pixel_pane_borders || sidebar.is_none() {
+            frame.graphics.extend(self.pane_frames.cleanup());
+            return;
+        }
+        let chrome = self.pane_frames.compose(
+            frame,
+            pane_frames::ChromeLayout {
+                panes: &[],
+                pane_area: Rect::default(),
+                sidebar,
+                active_tab: None,
+            },
+            self.graphics_cell_size,
+            &self.config.palette,
+            occlusion,
+        );
+        frame.graphics.extend(chrome);
+    }
+
     pub(super) fn compose_graphics(
         &mut self,
         frame: &mut FrameData,
@@ -58,17 +90,22 @@ impl ClientShellState {
             self.graphics_cell_size,
             occlusion,
         );
-        if !self.config.pixel_pane_borders || self.endpoint_error.is_some() {
+        if !self.config.pixel_pane_borders {
             frame.graphics.extend(self.pane_frames.cleanup());
             return;
         }
-        let panes = self
-            .pane_surface
-            .as_ref()
-            .map_or(&[][..], |surface| surface.panes.as_slice());
+        let panes = if self.endpoint_error.is_some() {
+            &[][..]
+        } else {
+            self.pane_surface
+                .as_ref()
+                .map_or(&[][..], |surface| surface.panes.as_slice())
+        };
         let active_tab = self
-            .snapshot
-            .as_deref()
+            .endpoint_error
+            .is_none()
+            .then_some(self.snapshot.as_deref())
+            .flatten()
             .and_then(|snapshot| snapshot.focused_tab_id.as_deref())
             .and_then(|focused| {
                 self.hits
@@ -81,6 +118,7 @@ impl ClientShellState {
             pane_frames::ChromeLayout {
                 panes,
                 pane_area: layout.pane_surface,
+                sidebar: (!layout.sidebar.is_empty()).then_some(layout.sidebar),
                 active_tab,
             },
             self.graphics_cell_size,

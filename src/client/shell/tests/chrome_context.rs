@@ -340,7 +340,7 @@ fn focused_last_overflow_tab_shows_its_full_label() {
             .expect("reporter's overflowing strip");
         assert_eq!(
             state.hits.new_tab.right() - state.hits.tab_scroll_left.x,
-            107
+            106
         );
         let rect = state
             .hits
@@ -447,7 +447,23 @@ fn client_owned_sidebar_dividers_resize_live() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.set_pane_surface(surface());
-    state.compose(106, 30).expect("expanded sidebar");
+    let frame = state.compose(106, 30).expect("expanded sidebar");
+    assert_eq!(
+        frame.cells[0].bg,
+        crate::protocol::color_to_u32(state.config.palette.pane_gap_bg)
+    );
+    assert_eq!(frame.cells[1].symbol, "🭽");
+    assert_eq!(
+        frame.cells[1].fg,
+        crate::protocol::color_to_u32(state.config.palette.overlay0)
+    );
+    assert_eq!(state.hits.workspaces[0].rect.x, 2);
+    assert_eq!(state.hits.workspaces[0].rect.right(), 26);
+    assert!(!state
+        .hits
+        .workspaces
+        .iter()
+        .any(|hit| hit.rect.contains((1, hit.rect.y).into())));
     assert!(state.hits.machines.is_empty());
     let workspace_body = state.hits.workspace_body;
     let needless_scroll =
@@ -470,7 +486,7 @@ fn client_owned_sidebar_dividers_resize_live() {
     let resize =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
-            column: 31,
+            column: 32,
             row: width_divider.y + 2,
             modifiers: KeyModifiers::empty(),
         })]);
@@ -496,22 +512,22 @@ fn client_owned_sidebar_dividers_resize_live() {
     assert!(state.hits.panes.is_empty());
     assert!(state.hits.pane_splits.is_empty());
     assert!(state.hits.machines.is_empty());
-    assert_eq!(state.hits.sidebar_divider.x, 31);
+    assert_eq!(state.hits.sidebar_divider.x, 32);
     assert_eq!(state.hits.workspaces[0].workspace_id, "ws_1");
 
     let next_resize =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Drag(MouseButton::Left),
-            column: 32,
+            column: 33,
             row: width_divider.y + 2,
             modifiers: KeyModifiers::empty(),
         })]);
     assert!(next_resize.resize);
     state.compose(106, 30).expect("continued resize");
-    assert_eq!(state.hits.sidebar_divider.x, 32);
+    assert_eq!(state.hits.sidebar_divider.x, 33);
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Left),
-        column: 32,
+        column: 33,
         row: width_divider.y + 2,
         modifiers: KeyModifiers::empty(),
     })]);
@@ -540,9 +556,208 @@ fn client_owned_sidebar_dividers_resize_live() {
         row: 20,
         modifiers: KeyModifiers::empty(),
     })]);
-    assert!(state.sidebar_section_split > 0.6);
+    assert!((state.sidebar_section_split - 19.0 / 28.0).abs() < f32::EPSILON);
     assert!(split.repaint);
     assert!(!split.resize);
+}
+
+fn short_local_sidebar_state() -> ClientShellState {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.mobile_width_threshold = 0;
+    let mut projected = snapshot();
+    let workspace = projected.workspaces[0].clone();
+    projected
+        .workspaces
+        .extend((2..=4).map(|number| ClientShellWorkspace {
+            workspace_id: format!("ws_{number}"),
+            number,
+            focused: false,
+            ..workspace.clone()
+        }));
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state
+}
+
+#[test]
+fn short_local_expanded_sidebar_keeps_header_controls_disjoint() {
+    let mut state = short_local_sidebar_state();
+    let frame = state.compose(80, 6).expect("short expanded frame");
+    let text = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+
+    assert!(text.contains("grouped"), "{text}");
+    assert_eq!(state.hits.agent_sort_toggle, Rect::new(19, 3, 7, 1));
+    assert_eq!(state.hits.sidebar_toggle, Rect::new(24, 4, 1, 1));
+    assert_eq!(frame.cells[4 * 80 + 24].symbol, "«");
+    assert!(!state
+        .hits
+        .sidebar_toggle
+        .intersects(state.hits.agent_sort_toggle));
+}
+
+#[test]
+fn normal_sidebar_control_positions_stay_stable() {
+    let mut state = short_local_sidebar_state();
+    state.compose(80, 24).expect("normal sidebar frame");
+
+    assert_eq!(state.hits.sidebar_divider, Rect::new(26, 0, 1, 24));
+    assert_eq!(state.hits.sidebar_section_divider, Rect::new(2, 12, 24, 1));
+    assert_eq!(state.hits.agent_sort_toggle, Rect::new(19, 13, 7, 1));
+    assert_eq!(state.hits.sidebar_toggle, Rect::new(24, 22, 1, 1));
+}
+
+#[test]
+fn short_local_compact_sidebar_keeps_toggle_off_workspace_rows() {
+    let mut state = short_local_sidebar_state();
+    state.sidebar_collapsed = true;
+    let frame = state.compose(80, 6).expect("short compact frame");
+
+    assert_eq!(state.hits.sidebar_toggle, Rect::new(3, 4, 1, 1));
+    assert_eq!(frame.cells[4 * 80 + 3].symbol, "»");
+    assert_eq!(state.hits.workspaces.len(), 3);
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .all(|hit| !state.hits.sidebar_toggle.intersects(hit.rect)));
+    assert!(state
+        .hits
+        .agents
+        .iter()
+        .all(|(rect, _)| !state.hits.sidebar_toggle.intersects(*rect)));
+}
+
+#[test]
+fn unavailable_composition_preserves_sidebar_surrounding_backgrounds() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.mobile_width_threshold = 0;
+    config.pixel_pane_borders = true;
+    config.palette.panel_bg = Color::Rgb(11, 12, 13);
+    config.palette.pane_gap_bg = Color::Rgb(21, 22, 23);
+    config.palette.sidebar_bg = Color::Rgb(31, 32, 33);
+    let mut state = ClientShellState::new(config);
+    state.set_graphics_cell_size(17, 36);
+    state.set_snapshot(Box::new(snapshot()));
+
+    let frame = state.compose(40, 8).expect("unavailable frame");
+    assert_eq!(
+        frame
+            .graphics
+            .windows(5)
+            .filter(|bytes| *bytes == b"a=t,t")
+            .count(),
+        2
+    );
+    let gap = crate::protocol::color_to_u32(Color::Rgb(21, 22, 23));
+    let sidebar = crate::protocol::color_to_u32(Color::Rgb(31, 32, 33));
+    for y in 0..7_usize {
+        assert_eq!(frame.cells[y * 40].bg, gap, "left margin row {y}");
+        assert_eq!(frame.cells[y * 40 + 27].bg, gap, "right gutter row {y}");
+        assert_eq!(frame.cells[y * 40 + 1].bg, sidebar, "left frame row {y}");
+        assert_eq!(frame.cells[y * 40 + 26].bg, sidebar, "right frame row {y}");
+    }
+    assert_eq!(frame.cells[7 * 40].bg, gap, "left margin row 7");
+}
+
+#[test]
+fn tiny_sidebar_attention_never_overwrites_the_exterior_margin_or_frame() {
+    for (cols, rows, expected_edges) in [
+        (10, 1, vec![(1, 0, "🭽"), (8, 0, "🭾")]),
+        (
+            10,
+            2,
+            vec![(1, 0, "🭽"), (8, 0, "🭾"), (1, 1, "🭼"), (8, 1, "🭿")],
+        ),
+        (
+            4,
+            2,
+            vec![(1, 0, "🭽"), (2, 0, "🭾"), (1, 1, "🭼"), (2, 1, "🭿")],
+        ),
+    ] {
+        let mut config = ClientShellConfig::from_config(&Config::default());
+        config.mouse_capture = true;
+        config.mobile_width_threshold = 0;
+        config.palette.pane_gap_bg = Color::Rgb(21, 22, 23);
+        let mut projected = snapshot();
+        projected.update_available = Some("9.9.9".into());
+        let mut state = ClientShellState::new(config);
+        state.set_snapshot(Box::new(projected));
+        state.set_pane_surface(surface());
+
+        let frame = state.compose(cols, rows).expect("tiny frame");
+        let gap = crate::protocol::color_to_u32(Color::Rgb(21, 22, 23));
+        for y in 0..rows {
+            let margin = &frame.cells[usize::from(y * cols)];
+            assert_eq!(margin.symbol, " ", "{cols}x{rows} margin row {y}");
+            assert_eq!(margin.bg, gap, "{cols}x{rows} margin row {y}");
+        }
+        for (x, y, symbol) in expected_edges {
+            assert_eq!(
+                frame.cells[usize::from(y * cols + x)].symbol,
+                symbol,
+                "{cols}x{rows} frame at {x},{y}"
+            );
+        }
+        assert_eq!(state.hits.global_launcher, Rect::default());
+        assert_eq!(state.hits.new_workspace, Rect::default());
+    }
+}
+
+#[test]
+fn unavailable_and_hidden_frames_retire_stale_sidebar_images() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.pixel_pane_borders = true;
+    config.palette.sidebar_bg = Color::Rgb(45, 40, 55);
+    config.palette.pane_default_bg = Color::Rgb(30, 30, 46);
+    config.palette.pane_gap_bg = Color::Rgb(34, 31, 34);
+    let mut state = ClientShellState::new(config);
+    state.set_graphics_cell_size(17, 36);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let healthy = state.compose(106, 30).expect("healthy frame");
+    let sidebar_uploads = regex::Regex::new(r"a=t,[^;]*f=100,s=442,v=36,i=(\d+)").unwrap();
+    let sidebar_ids = sidebar_uploads
+        .captures_iter(&String::from_utf8_lossy(&healthy.graphics))
+        .map(|capture| capture[1].to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        sidebar_ids.len(),
+        2,
+        "healthy graphics: {}",
+        String::from_utf8_lossy(&healthy.graphics)
+    );
+
+    state.invalidate_pane_surface();
+    let unavailable = state.compose(106, 30).expect("unavailable frame");
+    let unavailable_graphics = String::from_utf8_lossy(&unavailable.graphics);
+    for id in &sidebar_ids {
+        assert!(unavailable_graphics.contains(&format!("a=p,i={id}")));
+        assert!(!unavailable_graphics.contains(&format!("a=d,d=I,i={id}")));
+    }
+    assert_eq!(state.hits.sidebar_divider, Rect::new(26, 0, 1, 30));
+
+    state.sidebar_collapsed = true;
+    state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
+    let hidden = state.compose(106, 30).expect("hidden unavailable frame");
+    let hidden_graphics = String::from_utf8_lossy(&hidden.graphics);
+    for id in &sidebar_ids {
+        assert!(hidden_graphics.contains(&format!("a=d,d=I,i={id}")));
+    }
+    assert_eq!(state.hits.sidebar_divider, Rect::default());
+
+    state.sidebar_collapsed = false;
+    state.set_pane_surface(surface());
+    let recovered = state.compose(106, 30).expect("recovered frame");
+    let recovered_graphics = String::from_utf8_lossy(&recovered.graphics);
+    for id in sidebar_ids {
+        assert!(recovered_graphics.contains(&format!("a=p,i={id}")));
+        assert!(!recovered_graphics.contains(&format!("a=d,d=I,i={id}")));
+    }
 }
 
 #[test]

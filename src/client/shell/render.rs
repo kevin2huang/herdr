@@ -13,23 +13,27 @@ pub(super) use overlays::{render_client_overlay, render_context_menu, render_glo
 pub(super) use sidebar::{render_collapsed_sidebar, render_sidebar, workspace_entries};
 pub(super) use tabs::{render_tab_bar, tab_bar_status_width};
 
-pub(in crate::client::shell) fn render_sidebar_background(
+pub(in crate::client::shell) fn sidebar_content(area: Rect) -> Rect {
+    area.inner(ratatui::layout::Margin {
+        horizontal: 1,
+        vertical: 1,
+    })
+}
+
+pub(in crate::client::shell) fn render_sidebar_frame(
     buffer: &mut Buffer,
     area: Rect,
     palette: &Palette,
 ) {
-    buffer.set_style(area, Style::default().bg(palette.sidebar_bg));
-    let separator_x = area.right().saturating_sub(1);
-    for y in area.y..area.bottom() {
-        if let Some(cell) = buffer.cell_mut((separator_x, y)) {
-            cell.set_symbol(if palette.pane_default_bg == Color::Reset {
-                "│"
-            } else {
-                "▕"
-            });
-            cell.set_style(Style::default().fg(palette.surface_dim));
-        }
-    }
+    ratatui::widgets::Widget::render(
+        ratatui::widgets::Block::default()
+            .borders(ratatui::widgets::Borders::ALL)
+            .border_set(crate::ui::PANE_BORDER_SET)
+            .border_style(Style::default().fg(palette.overlay0))
+            .style(Style::default().bg(palette.sidebar_bg)),
+        area,
+        buffer,
+    );
 }
 
 pub(super) fn render_mode_bar(
@@ -271,11 +275,19 @@ pub(super) fn render_shell(
         );
     }
     if layout.sidebar.width > 0 {
+        render_sidebar_frame(buffer, layout.sidebar, &config.palette);
+        let sidebar_content = sidebar_content(layout.sidebar);
+        hits.sidebar_divider = Rect::new(
+            layout.sidebar.right().saturating_sub(1),
+            layout.sidebar.y,
+            1,
+            layout.sidebar.height,
+        );
         if state.endpoints.len() > 1 {
             if state.sidebar_collapsed {
                 super::endpoint_sidebar::render_collapsed(
                     buffer,
-                    layout.sidebar,
+                    sidebar_content,
                     config,
                     &mut state,
                     &mut hits,
@@ -283,7 +295,7 @@ pub(super) fn render_shell(
             } else {
                 super::endpoint_sidebar::render_expanded(
                     buffer,
-                    layout.sidebar,
+                    sidebar_content,
                     Some(snapshot),
                     config,
                     &mut state,
@@ -293,7 +305,7 @@ pub(super) fn render_shell(
         } else if state.sidebar_collapsed {
             render_collapsed_sidebar(
                 buffer,
-                layout.sidebar,
+                sidebar_content,
                 snapshot,
                 config,
                 state
@@ -304,7 +316,7 @@ pub(super) fn render_shell(
         } else {
             render_sidebar(
                 buffer,
-                layout.sidebar,
+                sidebar_content,
                 snapshot,
                 config,
                 &mut state,

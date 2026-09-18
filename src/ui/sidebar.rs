@@ -32,23 +32,24 @@ fn sidebar_section_heights(total_height: u16, split_ratio: f32) -> (u16, u16) {
         return (0, 0);
     }
     if total_height < 6 {
-        let workspace_height = total_height.div_ceil(2);
-        return (
-            workspace_height,
-            total_height.saturating_sub(workspace_height),
-        );
+        let panel_height = total_height.saturating_sub(1);
+        let detail_height = if panel_height >= 3 {
+            2
+        } else {
+            panel_height / 2
+        };
+        return (panel_height.saturating_sub(detail_height), detail_height);
     }
 
     let workspace_height = ((total_height as f32) * split_ratio.clamp(0.1, 0.9)).round() as u16;
     let workspace_height = workspace_height.clamp(3, total_height.saturating_sub(3));
     (
         workspace_height,
-        total_height.saturating_sub(workspace_height),
+        total_height.saturating_sub(workspace_height + 1),
     )
 }
 
-pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, Rect) {
-    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+pub(crate) fn expanded_sidebar_sections(content: Rect, split_ratio: f32) -> (Rect, Rect) {
     if content.is_empty() {
         return (Rect::default(), Rect::default());
     }
@@ -65,8 +66,7 @@ pub(crate) fn expanded_sidebar_sections(area: Rect, split_ratio: f32) -> (Rect, 
     )
 }
 
-pub(crate) fn sidebar_section_divider_rect(area: Rect, split_ratio: f32) -> Rect {
-    let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
+pub(crate) fn sidebar_section_divider_rect(content: Rect, split_ratio: f32) -> Rect {
     if content.width == 0 || content.height < 6 {
         return Rect::default();
     }

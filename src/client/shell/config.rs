@@ -379,7 +379,7 @@ impl ClientShellConfig {
 
         let sidebar_width = if sidebar_collapsed {
             match self.sidebar_collapsed_mode {
-                SidebarCollapsedModeConfig::Compact => 4,
+                SidebarCollapsedModeConfig::Compact => 5,
                 SidebarCollapsedModeConfig::Hidden => 0,
             }
         } else {
@@ -389,11 +389,13 @@ impl ClientShellConfig {
             )
             .unwrap_or((18, 36));
             sidebar_width.clamp(min, max)
-        }
-        .min(cols.saturating_sub(1));
+        };
+        let sidebar_margin = u16::from(sidebar_width > 0);
+        let sidebar_width = sidebar_width.min(cols.saturating_sub(sidebar_margin + 1));
+        let sidebar_margin = u16::from(sidebar_width > 0);
         let gutter = u16::from(sidebar_width > 0 && self.palette.pane_default_bg != Color::Reset)
-            .min(cols.saturating_sub(sidebar_width + 1));
-        let main_x = sidebar_width + gutter;
+            .min(cols.saturating_sub(sidebar_margin + sidebar_width + 1));
+        let main_x = sidebar_margin + sidebar_width + gutter;
         let main = Rect::new(main_x, 0, cols.saturating_sub(main_x), rows);
         let show_tab_bar = rows > 1 && !(self.hide_tab_bar_when_single_tab && tab_count == 1);
         let tab_height = u16::from(show_tab_bar);
@@ -419,7 +421,7 @@ impl ClientShellConfig {
         };
 
         ClientShellLayout {
-            sidebar: Rect::new(0, 0, sidebar_width, rows),
+            sidebar: Rect::new(sidebar_margin, 0, sidebar_width, rows),
             tab_bar,
             mobile_header: Rect::default(),
             pane_surface,
@@ -498,6 +500,62 @@ mod tests {
             shell.keybinds.prefix,
             (KeyCode::Char('a'), KeyModifiers::CONTROL)
         );
+    }
+
+    #[test]
+    fn sidebar_layout_reserves_margin_panel_gutter_and_main_area() {
+        let mut shell = ClientShellConfig::from_config(&Config::default());
+        shell.palette.pane_default_bg = Color::Rgb(30, 30, 46);
+
+        let expanded = shell.layout(100, 30, false, 2, 26);
+        assert_eq!(expanded.sidebar, Rect::new(1, 0, 26, 30));
+        assert_eq!(expanded.tab_bar, Rect::new(28, 0, 72, 1));
+        assert_eq!(expanded.pane_surface, Rect::new(28, 1, 72, 29));
+
+        let compact = shell.layout(100, 30, true, 2, 26);
+        assert_eq!(compact.sidebar, Rect::new(1, 0, 5, 30));
+        assert_eq!(
+            render::sidebar_content(compact.sidebar),
+            Rect::new(2, 1, 3, 28)
+        );
+        assert_eq!(compact.pane_surface.x, 7);
+    }
+
+    #[test]
+    fn hidden_mobile_and_tiny_layouts_do_not_leak_sidebar_geometry() {
+        let mut shell = ClientShellConfig::from_config(&Config::default());
+        shell.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
+        let hidden = shell.layout(100, 30, true, 2, 26);
+        assert_eq!(hidden.sidebar, Rect::new(0, 0, 0, 30));
+        assert_eq!(hidden.pane_surface, Rect::new(0, 1, 100, 29));
+
+        shell.mobile_width_threshold = 50;
+        let mobile = shell.layout(40, 10, false, 2, 26);
+        assert_eq!(mobile.sidebar, Rect::default());
+        assert_eq!(mobile.mobile_header, Rect::new(0, 0, 40, 2));
+        assert_eq!(mobile.pane_surface, Rect::new(0, 2, 40, 8));
+
+        shell.mobile_width_threshold = 0;
+        let tiny = shell.layout(3, 2, false, 2, 26);
+        assert_eq!(tiny.sidebar, Rect::new(1, 0, 1, 2));
+        assert_eq!(tiny.pane_surface, Rect::new(2, 1, 1, 1));
+        assert_eq!(render::sidebar_content(tiny.sidebar), Rect::default());
+    }
+
+    #[test]
+    fn sidebar_inset_preserves_bottom_and_hidden_tab_layouts() {
+        let mut shell = ClientShellConfig::from_config(&Config::default());
+        shell.palette.pane_default_bg = Color::Rgb(30, 30, 46);
+        shell.tab_bar_position = TabBarPositionConfig::Bottom;
+        let bottom = shell.layout(80, 12, false, 2, 24);
+        assert_eq!(bottom.sidebar, Rect::new(1, 0, 24, 12));
+        assert_eq!(bottom.pane_surface, Rect::new(26, 0, 54, 11));
+        assert_eq!(bottom.tab_bar, Rect::new(26, 11, 54, 1));
+
+        shell.hide_tab_bar_when_single_tab = true;
+        let hidden = shell.layout(80, 12, false, 1, 24);
+        assert_eq!(hidden.tab_bar, Rect::new(26, 12, 54, 0));
+        assert_eq!(hidden.pane_surface, Rect::new(26, 0, 54, 12));
     }
 
     #[test]

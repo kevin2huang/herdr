@@ -8,19 +8,20 @@ fn mouse_hits_use_stable_workspace_tab_and_pane_ids() {
     state.set_pane_surface(surface());
     state.compose(106, 20).expect("composed frame");
 
+    let workspace_hit = state.hits.workspaces[0].rect;
     let workspace_down =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: 2,
-            row: 2,
+            column: workspace_hit.x,
+            row: workspace_hit.y,
             modifiers: KeyModifiers::empty(),
         })]);
     assert!(workspace_down.actions.is_empty());
     let workspace =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
-            column: 2,
-            row: 2,
+            column: workspace_hit.x,
+            row: workspace_hit.y,
             modifiers: KeyModifiers::empty(),
         })]);
     assert!(workspace.requests.is_empty());
@@ -33,10 +34,11 @@ fn mouse_hits_use_stable_workspace_tab_and_pane_ids() {
             if target.workspace_id == "ws_1"
     ));
 
+    let pane_hit = state.hits.panes[0].inner_rect;
     let pane = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
-        column: 27,
-        row: 1,
+        column: pane_hit.x,
+        row: pane_hit.y,
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(pane.requests.is_empty());
@@ -529,7 +531,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
         crate::api::schema::Method::PaneFocus(target) if target.pane_id == "pane_2"
     ));
 
-    state.compose(106, 10).expect("short agent sidebar frame");
+    state.compose(106, 12).expect("short agent sidebar frame");
     assert_eq!(
         state
             .hits
@@ -539,6 +541,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
         Some("pane_2")
     );
     let body = state.hits.agent_body;
+    assert_eq!(body.height, 1);
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::ScrollDown,
         column: body.x,
@@ -546,7 +549,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
         modifiers: KeyModifiers::empty(),
     })]);
     state
-        .compose(106, 10)
+        .compose(106, 12)
         .expect("scrolled agent sidebar frame");
     assert_eq!(
         state

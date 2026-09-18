@@ -27,14 +27,23 @@ impl ClientShellState {
             buffer.area,
             Style::default()
                 .fg(self.config.palette.text)
-                .bg(self.config.palette.panel_bg),
+                .bg(self.config.palette.pane_gap_bg),
         );
         self.hits = ShellHitMap::default();
         let sidebar = if layout.sidebar.width > 0 {
-            layout.sidebar
+            render::render_sidebar_frame(&mut buffer, layout.sidebar, &self.config.palette);
+            render::sidebar_content(layout.sidebar)
         } else {
             Rect::new(0, 1, cols, rows.saturating_sub(2))
         };
+        if !layout.sidebar.is_empty() {
+            self.hits.sidebar_divider = Rect::new(
+                layout.sidebar.right().saturating_sub(1),
+                layout.sidebar.y,
+                1,
+                layout.sidebar.height,
+            );
+        }
         let valid_navigation_target = self.mode == ClientShellMode::Navigate
             && self
                 .navigate_workspace_id
@@ -127,7 +136,22 @@ impl ClientShellState {
             &self.config.keybinds,
             &self.config.palette,
         );
-        FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
+        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+        let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
+        if self.mode != ClientShellMode::Terminal || self.endpoint_error.is_some() {
+            occlusion.cover(Rect::new(
+                0,
+                rows.saturating_sub(1),
+                cols,
+                u16::from(rows > 0),
+            ));
+        }
+        self.compose_unavailable_graphics(
+            &mut frame,
+            (!layout.sidebar.is_empty()).then_some(layout.sidebar),
+            &occlusion,
+        );
+        frame
     }
 
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {

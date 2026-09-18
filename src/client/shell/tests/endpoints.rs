@@ -110,6 +110,76 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
 }
 
 #[test]
+fn expanded_sidebar_reserves_its_footer_when_agent_lists_are_full() {
+    for aggregate in [false, true] {
+        let (mut state, _) = state_with_scrollable_agents();
+        if !aggregate {
+            state.set_endpoint_catalog(&[]);
+        }
+        let frame = state.compose(80, 24).expect("populated sidebar frame");
+
+        assert_eq!(state.hits.agent_body, Rect::new(2, 15, 24, 7));
+        assert_eq!(state.hits.sidebar_toggle, Rect::new(24, 22, 1, 1));
+        assert_eq!(frame.cells[22 * 80 + 24].symbol, "«");
+        assert!(!state.hits.agent_body.intersects(state.hits.sidebar_toggle));
+        assert!(if aggregate {
+            !state.hits.endpoint_agents.is_empty()
+        } else {
+            !state.hits.agents.is_empty()
+        });
+    }
+}
+
+#[test]
+fn short_endpoint_expanded_sidebar_keeps_header_controls_disjoint() {
+    let (mut state, _) = state_with_remote();
+    state.config.mobile_width_threshold = 0;
+    let frame = state.compose(80, 6).expect("short expanded endpoint frame");
+    let text = frame
+        .cells
+        .iter()
+        .map(|cell| cell.symbol.as_str())
+        .collect::<String>();
+
+    assert!(text.contains("grouped"), "{text}");
+    assert_eq!(state.hits.agent_sort_toggle, Rect::new(19, 3, 7, 1));
+    assert_eq!(state.hits.sidebar_toggle, Rect::new(24, 4, 1, 1));
+    assert_eq!(frame.cells[4 * 80 + 24].symbol, "«");
+    assert!(!state
+        .hits
+        .sidebar_toggle
+        .intersects(state.hits.agent_sort_toggle));
+}
+
+#[test]
+fn short_endpoint_compact_sidebar_keeps_toggle_off_content_rows() {
+    let (mut state, _) = state_with_remote();
+    state.config.mobile_width_threshold = 0;
+    state.sidebar_collapsed = true;
+    let frame = state.compose(80, 6).expect("short compact endpoint frame");
+
+    assert_eq!(state.hits.sidebar_toggle, Rect::new(3, 4, 1, 1));
+    assert_eq!(frame.cells[4 * 80 + 3].symbol, "»");
+    assert_eq!(state.hits.machines.len(), 2);
+    assert_eq!(state.hits.workspaces.len(), 1);
+    assert!(state
+        .hits
+        .machines
+        .iter()
+        .all(|hit| !state.hits.sidebar_toggle.intersects(hit.rect)));
+    assert!(state
+        .hits
+        .workspaces
+        .iter()
+        .all(|hit| !state.hits.sidebar_toggle.intersects(hit.rect)));
+    assert!(state
+        .hits
+        .endpoint_agents
+        .iter()
+        .all(|(rect, _, _)| !state.hits.sidebar_toggle.intersects(*rect)));
+}
+
+#[test]
 fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
     let (mut state, remote) = state_with_scrollable_agents();
     for endpoint_id in [remote.clone(), ClientEndpointId::Local, remote] {
@@ -748,7 +818,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
     );
 
     state.workspace_scroll = usize::MAX;
-    state.compose(100, 18).expect("scrolled endpoint frame");
+    state.compose(100, 20).expect("scrolled endpoint frame");
     let metrics = state
         .hits
         .workspace_scroll_metrics
