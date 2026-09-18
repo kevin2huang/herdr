@@ -66,6 +66,8 @@ python3 /path/to/verify-herdr/scripts/replay_ansi.py /tmp/herdr-pane-background-
 
 Use only captures from the isolated verifier. ANSI can include terminal commands, not just text. Keep the host grid at least as large as the recorded grid. The replay helper enters raw mode so terminal query responses do not echo into the picture, then restores the terminal on exit.
 
+On macOS, capture the owned preview window directly with `screencapture -x -o -l <window-id> screenshot.png`. Resolve its current numeric Core Graphics window ID; Ghostty's AppleScript window ID is not interchangeable. A full-desktop capture can show the lock screen instead of the preview. Open the result and confirm it contains the fixture before measuring it. Direct window captures can use a different color profile, so compare image and text colors within the same capture.
+
 A capture taken after a focus change or resize can contain only image placements. A fresh terminal also needs the earlier image uploads. For `line_tabs_keep_panel_background_and_follow_focus`, replay `tabs/replay/raw.ansi`, which includes the initial uploads and subsequent updates. The individual `narrow`, `focused-second`, and `wide` captures are frame updates, not standalone sessions.
 
 Measure the sidebar gutter, the side-by-side gutter, and the stacked gutter again. Check the pane's first pixel after the border, its scrollbar lane, and focused and unfocused corners. A passing libghostty-vt cell census alone cannot prove where the host renderer places a stroke.
