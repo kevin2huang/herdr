@@ -1,0 +1,373 @@
+use super::*;
+use crate::client::shell::render::put_text;
+use ratatui::widgets::{Block, Borders, Widget};
+
+fn fixture(count: usize) -> (FrameData, Vec<PaneSurfacePane>, Palette) {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 120, 40));
+    let mut panes = Vec::new();
+    let palette = Palette {
+        accent: Color::Rgb(169, 220, 118),
+        overlay0: Color::Rgb(91, 89, 92),
+        pane_default_bg: Color::Rgb(30, 30, 46),
+        pane_gap_bg: Color::Rgb(34, 31, 34),
+        ..Palette::catppuccin()
+    };
+    for index in 0..count {
+        let rect = if count == 1 {
+            buffer.area
+        } else {
+            Rect::new((index % 5) as u16 * 24, (index / 5) as u16 * 13, 23, 13)
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_set(crate::ui::PANE_BORDER_SET)
+            .title("label");
+        let inner = block.inner(rect);
+        block.render(rect, &mut buffer);
+        panes.push(PaneSurfacePane {
+            pane_id: format!("pane-{index}"),
+            content_revision: 0,
+            rect: rect.into(),
+            inner_rect: inner.into(),
+            scrollbar_rect: None,
+            scroll: None,
+            focused: index == 0,
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 0,
+            pixel_height: 0,
+        });
+    }
+    (
+        FrameData::from_ratatui_buffer(&buffer, None),
+        panes,
+        palette,
+    )
+}
+
+const CELL: HostCellSize = HostCellSize {
+    width_px: 17,
+    height_px: 36,
+};
+
+fn layout(panes: &[PaneSurfacePane], active_tab: Option<Rect>) -> ChromeLayout<'_> {
+    ChromeLayout {
+        panes,
+        pane_area: Rect::default(),
+        active_tab,
+    }
+}
+
+fn tab_frame() -> FrameData {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 20, 2));
+    put_text(
+        &mut buffer,
+        2,
+        0,
+        8,
+        " First  ",
+        Style::default()
+            .fg(Color::Rgb(169, 220, 118))
+            .bg(Color::Rgb(34, 31, 34))
+            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+    );
+    FrameData::from_ratatui_buffer(&buffer, None)
+}
+
+fn assert_font_underline_fallback(
+    active_tab: Option<Rect>,
+    cell: HostCellSize,
+    palette: &Palette,
+    occlusion: &surface::Occlusion,
+) {
+    let mut frames = PaneFrames::default();
+    frames.set_scope("fallback");
+    let mut frame = tab_frame();
+    let bytes = frames.compose(
+        &mut frame,
+        layout(&[], active_tab),
+        cell,
+        palette,
+        occlusion,
+    );
+    assert!(!bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
+    assert!(frame.cells[2..10]
+        .iter()
+        .all(|cell| cell.modifier & Modifier::UNDERLINED.bits() != 0));
+}
+
+#[test]
+fn tab_underline_png_uses_only_the_bottom_two_pixel_rows() {
+    let underline = TabUnderline {
+        rect: Rect::new(0, 0, 1, 1),
+        cell_width: 17,
+        cell_height: 36,
+        accent: [169, 220, 118],
+    };
+    let mut reader = png::Decoder::new(std::io::Cursor::new(underline.png().unwrap()))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!((info.width, info.height), (17, 36));
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    assert_eq!(pixels[..17 * 34 * 4], vec![0; 17 * 34 * 4]);
+    let accent = if cfg!(target_os = "macos") {
+        [179, 219, 130, 255]
+    } else {
+        [169, 220, 118, 255]
+    };
+    assert_eq!(pixels[17 * 34 * 4..], accent.repeat(17 * 2));
+    assert!(TabUnderline {
+        rect: Rect::new(0, 0, u16::MAX, 1),
+        cell_width: 17,
+        cell_height: 36,
+        accent: [169, 220, 118],
+    }
+    .png()
+    .is_err());
+}
+
+#[test]
+fn invalid_or_occluded_tab_underlines_keep_the_font_fallback() {
+    let palette = fixture(0).2;
+    assert_font_underline_fallback(
+        Some(Rect::new(2, 0, 8, 1)),
+        HostCellSize {
+            width_px: 1,
+            height_px: 1,
+        },
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert_font_underline_fallback(
+        Some(Rect::new(18, 0, 8, 1)),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    let mut non_rgb = palette.clone();
+    non_rgb.accent = Color::Indexed(2);
+    assert_font_underline_fallback(
+        Some(Rect::new(2, 0, 8, 1)),
+        CELL,
+        &non_rgb,
+        &surface::Occlusion::default(),
+    );
+    let mut occlusion = surface::Occlusion::default();
+    occlusion.cover(Rect::new(2, 0, 8, 1));
+    assert_font_underline_fallback(Some(Rect::new(2, 0, 8, 1)), CELL, &palette, &occlusion);
+}
+
+#[test]
+fn pixel_tab_underline_preserves_labels_colors_and_other_modifiers() {
+    let palette = fixture(0).2;
+    let mut frames = PaneFrames::default();
+    frames.set_scope("tabs");
+    let mut frame = tab_frame();
+    let original = frame.cells[2..10].to_vec();
+    let bytes = frames.compose(
+        &mut frame,
+        layout(&[], Some(Rect::new(2, 0, 8, 1))),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
+    for (before, after) in original.iter().zip(&frame.cells[2..10]) {
+        assert_eq!(after.symbol, before.symbol);
+        assert_eq!(after.fg, before.fg);
+        assert_eq!(after.bg, before.bg);
+        assert_eq!(
+            after.modifier & Modifier::BOLD.bits(),
+            Modifier::BOLD.bits()
+        );
+        assert_eq!(after.modifier & Modifier::UNDERLINED.bits(), 0);
+    }
+}
+
+#[test]
+fn tab_underline_fallback_and_focus_changes_retain_the_font_indicator() {
+    let palette = fixture(0).2;
+    let mut frames = PaneFrames::default();
+    frames.set_scope("tabs");
+    let mut first = tab_frame();
+    let initial = frames.compose(
+        &mut first,
+        layout(&[], Some(Rect::new(2, 0, 8, 1))),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(initial.windows(5).any(|bytes| bytes == b"a=t,t"));
+    let mut redraw = tab_frame();
+    let replay = frames.compose(
+        &mut redraw,
+        layout(&[], Some(Rect::new(2, 0, 8, 1))),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(!replay.windows(5).any(|bytes| bytes == b"a=t,t"));
+
+    let mut focused = tab_frame();
+    let changed = frames.compose(
+        &mut focused,
+        layout(&[], Some(Rect::new(11, 0, 7, 1))),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(changed.windows(5).any(|bytes| bytes == b"a=t,t"));
+    assert!(String::from_utf8_lossy(&changed).contains("a=d,d=I"));
+    assert!(focused.cells[2..10]
+        .iter()
+        .all(|cell| cell.modifier & Modifier::UNDERLINED.bits() != 0));
+}
+
+#[test]
+fn pixel_frames_preserve_labels_and_reuse_images_during_redraws() {
+    let (original, panes, palette) = fixture(1);
+    let mut frames = PaneFrames::default();
+    frames.set_scope("test");
+    let mut frame = original.clone();
+    let bytes = frames.compose(
+        &mut frame,
+        layout(&panes, None),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
+    assert_eq!(frame.cells[0].symbol, " ");
+    assert_eq!(
+        frame.cells[1..6]
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>(),
+        "label"
+    );
+    assert!(frames.take_pending_cleanup().is_empty());
+    let bytes = frames.compose(
+        &mut original.clone(),
+        layout(&panes, None),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(!bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
+    assert!(
+        !bytes.is_empty(),
+        "replay placements without uploading pixels"
+    );
+    frames.set_scope("next-workspace");
+    assert!(
+        !frames.take_pending_cleanup().is_empty(),
+        "retire the previous workspace's images"
+    );
+}
+
+#[test]
+fn overlays_keep_their_text_and_occlude_border_images() {
+    let (mut frame, panes, palette) = fixture(1);
+    let mut frames = PaneFrames::default();
+    frames.set_scope("test");
+    let mut occlusion = surface::Occlusion::default();
+    occlusion.cover(Rect::new(0, 0, 120, 1));
+    frames.compose(&mut frame, layout(&panes, None), CELL, &palette, &occlusion);
+    assert_eq!(
+        frame.cells[0].symbol, "🭽",
+        "occluded rows retain their text fallback"
+    );
+    assert_eq!(
+        frame.cells[120 * 39].symbol,
+        " ",
+        "unoccluded bottom uses pixels"
+    );
+    let cleanup = frames.cleanup();
+    assert!(
+        !cleanup.is_empty(),
+        "hidden frames must remove their images"
+    );
+    assert!(frames.cleanup().is_empty());
+}
+
+#[test]
+fn rounded_border_strips_cut_out_corners_and_join_straight_edges() {
+    for (edge, outer_y, side_y, blended_y) in [(Edge::Top, 8, 20, 16), (Edge::Bottom, 26, 14, 18)] {
+        let row = BorderRow {
+            rect: Rect::new(0, 0, 24, 1),
+            edge,
+            cell_width: 17,
+            cell_height: 36,
+            inside: [0; 3],
+            outside: [32; 3],
+            stroke: [255; 3],
+        };
+        let mut reader = png::Decoder::new(std::io::Cursor::new(row.png().unwrap()))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        let width = info.width as usize;
+        let pixel = |x: usize, y: usize| &pixels[(y * width + x) * 3..][..3];
+        for x in [0, width - 1] {
+            assert_eq!(
+                pixel(x, outer_y),
+                [32; 3],
+                "corner must expose the exterior"
+            );
+            assert_eq!(
+                pixel(x, side_y),
+                [255; 3],
+                "arc must join the vertical edge"
+            );
+            assert_eq!(pixel(x, blended_y), [139; 3], "curve must be antialiased");
+        }
+        assert_eq!(
+            pixel(12, outer_y),
+            [255; 3],
+            "arc must join the horizontal edge at 12 pixels"
+        );
+        assert_eq!(pixel(12, side_y), [0; 3], "pane interior remains unchanged");
+    }
+}
+
+#[test]
+#[ignore]
+fn pixel_pane_frame_render_scale_profile() {
+    for count in [1, 15] {
+        let (original, panes, palette) = fixture(count);
+        let mut frames = PaneFrames::default();
+        frames.set_scope("benchmark");
+        let occlusion = surface::Occlusion::default();
+        let active_tab = Some(Rect::new(8, 0, 8, 1));
+        frames.compose(
+            &mut original.clone(),
+            layout(&panes, active_tab),
+            CELL,
+            &palette,
+            &occlusion,
+        );
+        let mut samples = Vec::new();
+        for _ in 0..101 {
+            let mut frame = original.clone();
+            let start = std::time::Instant::now();
+            let bytes = frames.compose(
+                &mut frame,
+                layout(&panes, active_tab),
+                CELL,
+                &palette,
+                &occlusion,
+            );
+            samples.push(start.elapsed().as_micros());
+            assert!(!bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
+        }
+        samples.sort_unstable();
+        eprintln!(
+            "cached pixel borders and tab underline: {count} panes, median {} us/frame",
+            samples[50]
+        );
+    }
+}

@@ -22,7 +22,11 @@ pub(in crate::client::shell) fn render_sidebar_background(
     let separator_x = area.right().saturating_sub(1);
     for y in area.y..area.bottom() {
         if let Some(cell) = buffer.cell_mut((separator_x, y)) {
-            cell.set_symbol("│");
+            cell.set_symbol(if palette.pane_default_bg == Color::Reset {
+                "│"
+            } else {
+                "▕"
+            });
             cell.set_style(Style::default().fg(palette.surface_dim));
         }
     }

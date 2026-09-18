@@ -132,6 +132,55 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
 }
 
 #[test]
+fn client_selection_uses_the_configured_pane_default_background() {
+    use crate::terminal_theme::{DefaultColorKind, RgbColor};
+    use ratatui::style::Color;
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.palette = Palette::terminal();
+    config.palette.pane_default_bg = Color::Rgb(30, 30, 46);
+    config.theme_runtime.auto_switch = false;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+    let pane = state.hits.panes[0].clone();
+    for (kind, column) in [
+        (MouseEventKind::Down(MouseButton::Left), pane.inner_rect.x),
+        (
+            MouseEventKind::Drag(MouseButton::Left),
+            pane.inner_rect.x + 2,
+        ),
+    ] {
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row: pane.inner_rect.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    }
+    state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
+        kind: DefaultColorKind::Background,
+        color: RgbColor {
+            r: 237,
+            g: 237,
+            b: 234,
+        },
+    }]);
+
+    let frame = state.compose(106, 20).expect("pane-colored selection");
+    let cell_index = usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x);
+    assert_eq!(
+        frame.cells[cell_index].bg,
+        crate::protocol::color_to_u32(Color::Rgb(93, 93, 105))
+    );
+    assert_eq!(
+        frame.cells[cell_index].fg,
+        crate::protocol::color_to_u32(Color::Rgb(255, 255, 255))
+    );
+}
+
+#[test]
 fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

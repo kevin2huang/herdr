@@ -75,6 +75,14 @@ fn cleanup_spawned_herdr(spawned: SpawnedHerdr, base: PathBuf) {
     cleanup_test_base(&base);
 }
 
+struct TestBaseCleanup(PathBuf);
+
+impl Drop for TestBaseCleanup {
+    fn drop(&mut self) {
+        cleanup_test_base(&self.0);
+    }
+}
+
 fn test_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -699,6 +707,926 @@ fn screen_capture_preserves_split_utf8_bytes() {
             bytes == "café".as_bytes() && terminal_screen::text(&bytes, 80, 24).contains("café")
         }
     ));
+}
+
+#[test]
+fn pane_gap_background_visual_ownership() {
+    verify_pane_background_ownership(false);
+}
+
+#[test]
+fn pane_sidebar_gap_matches_split_gutter() {
+    verify_pane_background_ownership(true);
+}
+
+const PANE_BACKGROUND_CONFIG: &str = r##"onboarding = false
+
+[ui]
+sidebar_start_collapsed = true
+sidebar_collapsed_mode = "hidden"
+sidebar_width = 20
+hide_tab_bar_when_single_tab = true
+pane_borders = "auto"
+pane_outer_borders = true
+pane_scrollbars = true
+pane_gaps = true
+mouse_capture = false
+
+[theme]
+name = "terminal"
+
+[theme.custom]
+accent = "#a9dc76"
+overlay0 = "#5b595c"
+sidebar_bg = "#221f22"
+pane_gap_bg = "#221f22"
+pane_default_bg = "#1e1e2e"
+"##;
+
+#[test]
+fn line_tabs_keep_panel_background_and_follow_focus() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let cleanup = TestBaseCleanup(base.clone());
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let config = PANE_BACKGROUND_CONFIG
+        .replace(
+            "hide_tab_bar_when_single_tab = true",
+            "hide_tab_bar_when_single_tab = false",
+        )
+        .replace(
+            "mouse_capture = false",
+            "mouse_capture = true\nmobile_width_threshold = 0",
+        )
+        .replace(
+            "sidebar_bg = \"#221f22\"",
+            "sidebar_bg = \"#221f22\"\npanel_bg = \"#221f22\"",
+        );
+    let server = spawn_server_with_config(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &client_socket,
+        &config,
+    );
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+
+    let created = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "line-tabs-workspace",
+            "method": "workspace.create",
+            "params": {"cwd": &base, "focus": true},
+        })
+        .to_string(),
+    );
+    let workspace_id = created["result"]["workspace"]["workspace_id"]
+        .as_str()
+        .expect("workspace id")
+        .to_string();
+    let first_tab = created["result"]["tab"]["tab_id"]
+        .as_str()
+        .expect("first tab id")
+        .to_string();
+    let first_pane = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .expect("first pane id")
+        .to_string();
+    let mut tabs = vec![(first_tab, first_pane, "First")];
+    for (id, label) in [("line-tabs-second", "Second"), ("line-tabs-third", "Third")] {
+        let response = send_json_request(
+            &api_socket,
+            &serde_json::json!({
+                "id": id,
+                "method": "tab.create",
+                "params": {"workspace_id": &workspace_id, "focus": false},
+            })
+            .to_string(),
+        );
+        tabs.push((
+            response["result"]["tab"]["tab_id"]
+                .as_str()
+                .expect("tab id")
+                .to_string(),
+            response["result"]["root_pane"]["pane_id"]
+                .as_str()
+                .expect("pane id")
+                .to_string(),
+            label,
+        ));
+    }
+    for (tab_id, _, label) in &tabs {
+        let response = send_json_request(
+            &api_socket,
+            &serde_json::json!({
+                "id": format!("rename-{label}"),
+                "method": "tab.rename",
+                "params": {"tab_id": tab_id, "label": label},
+            })
+            .to_string(),
+        );
+        assert!(response.get("result").is_some(), "{response}");
+    }
+    send_pane_shell_command(&api_socket, &tabs[0].1, "printf 'FIRST_READY\\n'");
+
+    let (mut client, output) = attach_pixel_client(&config_home, &runtime_dir, &api_socket);
+    let (baseline_bytes, baseline_screen) = wait_for_tab_frame(
+        &output,
+        80,
+        24,
+        &["First", "Second", "Third", "FIRST_READY"],
+    );
+    write_tab_evidence("", &baseline_bytes, &baseline_screen, &config);
+    let mut replay = baseline_bytes.clone();
+    assert_tab_label_colors(
+        &baseline_bytes,
+        &baseline_screen,
+        80,
+        &[("First", [169, 220, 118]), ("Second", [91, 89, 92])],
+    );
+    assert_tab_label_backgrounds(
+        &baseline_bytes,
+        &baseline_screen,
+        80,
+        &["First", "Second", "Third"],
+    );
+    assert_pixel_tab_underline(&baseline_bytes);
+    assert_pixel_tab_underline_placement(&baseline_bytes, &baseline_screen, "First");
+
+    let (narrow_bytes, narrow_screen) = resize_and_wait_for_tab_frame(
+        &mut client,
+        &output,
+        22,
+        &["First", "FIRST_READY", "<", ">", "+"],
+    );
+    assert_tab_label_colors(
+        &narrow_bytes,
+        &narrow_screen,
+        22,
+        &[("First", [169, 220, 118])],
+    );
+    assert_pixel_tab_underline_placement(&narrow_bytes, &narrow_screen, "First");
+    write_tab_evidence("narrow", &narrow_bytes, &narrow_screen, &config);
+    replay.extend_from_slice(&narrow_bytes);
+
+    output
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .bytes
+        .clear();
+    let focused = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "focus-second-line-tab",
+            "method": "tab.focus",
+            "params": {"tab_id": &tabs[1].0},
+        })
+        .to_string(),
+    );
+    assert_eq!(focused["result"]["tab"]["focused"], true, "{focused}");
+    send_pane_shell_command(&api_socket, &tabs[1].1, "printf 'SECOND_READY\\n'");
+    let (focused_bytes, focused_screen) =
+        wait_for_tab_frame(&output, 22, 24, &["Second", "SECOND_READY"]);
+    assert_tab_label_colors(
+        &focused_bytes,
+        &focused_screen,
+        22,
+        &[("Second", [169, 220, 118])],
+    );
+    assert_pixel_tab_underline_placement(&focused_bytes, &focused_screen, "Second");
+    write_tab_evidence("focused-second", &focused_bytes, &focused_screen, &config);
+    replay.extend_from_slice(&focused_bytes);
+
+    let (wide_bytes, wide_screen) = resize_and_wait_for_tab_frame(
+        &mut client,
+        &output,
+        85,
+        &["First", "Second", "Third", "SECOND_READY"],
+    );
+    assert_tab_label_colors(
+        &wide_bytes,
+        &wide_screen,
+        85,
+        &[("First", [91, 89, 92]), ("Second", [169, 220, 118])],
+    );
+    assert_tab_label_backgrounds(&wide_bytes, &wide_screen, 85, &["First", "Second", "Third"]);
+    assert_pixel_tab_underline_placement(&wide_bytes, &wide_screen, "Second");
+    write_tab_evidence("wide", &wide_bytes, &wide_screen, &config);
+    replay.extend_from_slice(&wide_bytes);
+    write_tab_evidence("replay", &replay, &wide_screen, &config);
+
+    drop(client);
+    drop(server);
+    drop(cleanup);
+}
+
+fn resize_and_wait_for_tab_frame(
+    client: &mut SpawnedHerdr,
+    output: &SharedOutput,
+    cols: u16,
+    markers: &[&str],
+) -> (Vec<u8>, String) {
+    output
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .bytes
+        .clear();
+    client
+        ._master
+        .as_ref()
+        .expect("client PTY")
+        .resize(PtySize {
+            rows: 24,
+            cols,
+            pixel_width: cols * 17,
+            pixel_height: 24 * 36,
+        })
+        .expect("resize client PTY");
+    wait_for_tab_frame(output, cols, 24, markers)
+}
+
+fn wait_for_tab_frame(
+    output: &SharedOutput,
+    cols: u16,
+    rows: u16,
+    markers: &[&str],
+) -> (Vec<u8>, String) {
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            let bytes = output
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .bytes
+                .clone();
+            let completed = completed_client_frame(&bytes);
+            if completed.is_empty() {
+                return false;
+            }
+            let screen = terminal_screen::text(completed, cols, rows);
+            markers.iter().all(|marker| screen.contains(marker))
+        }),
+        "tab frame did not contain {markers:?}: {:?}",
+        read_output(output)
+    );
+    let bytes = output
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .bytes
+        .clone();
+    let bytes = completed_client_frame(&bytes).to_vec();
+    let screen = terminal_screen::text(&bytes, cols, rows);
+    (bytes, screen)
+}
+
+fn tab_label_position(screen: &str, label: &str) -> (usize, usize) {
+    screen
+        .lines()
+        .enumerate()
+        .find_map(|(row, line)| {
+            line.find(label).map(|byte_column| {
+                (
+                    row,
+                    unicode_width::UnicodeWidthStr::width(&line[..byte_column]),
+                )
+            })
+        })
+        .unwrap_or_else(|| panic!("missing tab label {label:?} in {screen:?}"))
+}
+
+fn assert_tab_label_colors(bytes: &[u8], screen: &str, cols: u16, expected: &[(&str, [u8; 3])]) {
+    let foregrounds = terminal_screen::explicit_foregrounds(bytes, cols, 24);
+    for (label, color) in expected {
+        let (row, column) = tab_label_position(screen, label);
+        for x in column..column + label.len() {
+            assert_eq!(
+                foregrounds[row * usize::from(cols) + x],
+                Some(*color),
+                "label {label:?} at {column},{row}, cell {x}: {screen:?}"
+            );
+        }
+    }
+}
+
+fn tab_underline_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let packets = regex::bytes::Regex::new(r"\x1b_G([^;]*f=100[^;]*);([^\x1b]*)\x1b\\").unwrap();
+    let underline = packets.captures_iter(bytes).find_map(|packet| {
+        let encoded = base64::engine::general_purpose::STANDARD
+            .decode(&packet[2])
+            .unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(&encoded))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        (info.color_type == png::ColorType::Rgba).then_some(encoded)
+    });
+    underline
+}
+
+fn assert_pixel_tab_underline(bytes: &[u8]) {
+    let png = tab_underline_png(bytes).expect("active tab underline PNG");
+    let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(info.height, 36);
+    let width = info.width as usize;
+    assert_eq!(pixels[..width * 34 * 4], vec![0; width * 34 * 4]);
+    let accent = if cfg!(target_os = "macos") {
+        [179, 219, 130, 255]
+    } else {
+        [169, 220, 118, 255]
+    };
+    assert_eq!(pixels[width * 34 * 4..], accent.repeat(width * 2));
+}
+
+fn assert_pixel_tab_underline_placement(bytes: &[u8], screen: &str, label: &str) {
+    let placement =
+        regex::bytes::Regex::new(r"\x1b\[(\d+);(\d+)H\x1b_Ga=p,[^\x1b]*c=(\d+),r=1,z=-1").unwrap();
+    let (label_row, label_column) = tab_label_position(screen, label);
+    let placed = placement.captures_iter(bytes).any(|capture| {
+        let row = std::str::from_utf8(&capture[1])
+            .unwrap()
+            .parse::<usize>()
+            .unwrap()
+            - 1;
+        let column = std::str::from_utf8(&capture[2])
+            .unwrap()
+            .parse::<usize>()
+            .unwrap()
+            - 1;
+        let columns = std::str::from_utf8(&capture[3])
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        row == label_row && column <= label_column && column + columns >= label_column + label.len()
+    });
+    assert!(placed, "pixel underline must span active label {label:?}");
+}
+
+fn assert_tab_label_backgrounds(bytes: &[u8], screen: &str, cols: u16, labels: &[&str]) {
+    let backgrounds = terminal_screen::explicit_backgrounds(bytes, cols, 24);
+    for label in labels {
+        let (row, column) = tab_label_position(screen, label);
+        for x in column..column + label.len() {
+            assert_eq!(backgrounds[row * usize::from(cols) + x], Some([34, 31, 34]));
+        }
+    }
+}
+
+fn write_tab_evidence(name: &str, bytes: &[u8], screen: &str, config: &str) {
+    let Some(root) = std::env::var_os("HERDR_VISUAL_EVIDENCE_DIR") else {
+        return;
+    };
+    let mut path = PathBuf::from(root).join("tabs");
+    if !name.is_empty() {
+        path.push(name);
+    }
+    fs::create_dir_all(&path).expect("create tab evidence directory");
+    fs::write(path.join("raw.ansi"), bytes).expect("write tab ANSI evidence");
+    if let Some(png) = tab_underline_png(bytes) {
+        fs::write(path.join("underline.png"), png).expect("write tab underline evidence");
+    }
+    fs::write(path.join("screen.txt"), screen).expect("write tab screen evidence");
+    fs::write(path.join("config.toml"), config).expect("write tab config evidence");
+}
+
+fn verify_pane_background_ownership(show_sidebar: bool) {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let cleanup = TestBaseCleanup(base.clone());
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let config = PANE_BACKGROUND_CONFIG.replace(
+        "sidebar_start_collapsed = true",
+        &format!("sidebar_start_collapsed = {}", !show_sidebar),
+    );
+    let evidence_dir = std::env::var_os("HERDR_VISUAL_EVIDENCE_DIR").map(|path| {
+        let path = PathBuf::from(path);
+        if show_sidebar {
+            path.join("sidebar")
+        } else {
+            path
+        }
+    });
+    let server = spawn_server_with_config(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &client_socket,
+        &config,
+    );
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+
+    let created = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "pane-gap-workspace",
+            "method": "workspace.create",
+            "params": {"cwd": &base, "focus": true, "label": "pane-gap-proof"},
+        })
+        .to_string(),
+    );
+    let left_pane = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .expect("left pane id");
+    let right = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "pane-gap-split-right",
+            "method": "pane.split",
+            "params": {
+                "target_pane_id": left_pane,
+                "direction": "right",
+                "ratio": 0.5,
+                "focus": true,
+            },
+        })
+        .to_string(),
+    );
+    let right_pane = right["result"]["pane"]["pane_id"]
+        .as_str()
+        .expect("right pane id");
+    let bottom = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "pane-gap-split-down",
+            "method": "pane.split",
+            "params": {
+                "target_pane_id": right_pane,
+                "direction": "down",
+                "ratio": 0.5,
+                "focus": true,
+            },
+        })
+        .to_string(),
+    );
+    let bottom_pane = bottom["result"]["pane"]["pane_id"]
+        .as_str()
+        .expect("bottom pane id");
+
+    send_pane_shell_command(
+        &api_socket,
+        left_pane,
+        "i=0; while [ \"$i\" -lt 30 ]; do printf 'history\\n'; i=$((i + 1)); done; printf '\\033[48;2;18;52;86mEXPLICIT_BG\\033[0m\\nLEFT_READY\\n'",
+    );
+    send_pane_shell_command(&api_socket, right_pane, "printf 'TOP_RIGHT_READY\\n'");
+    send_pane_shell_command(&api_socket, bottom_pane, "printf 'BOTTOM_RIGHT_READY\\n'");
+
+    let (client, output) = attach_pixel_client(&config_home, &runtime_dir, &api_socket);
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            let bytes = output
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .bytes
+                .clone();
+            let screen = terminal_screen::text(completed_client_frame(&bytes), 80, 24);
+            ["LEFT_READY", "TOP_RIGHT_READY", "BOTTOM_RIGHT_READY"]
+                .iter()
+                .all(|marker| screen.contains(marker))
+        }),
+        "three-pane client shell did not render: {:?}",
+        read_output(&output)
+    );
+
+    let bytes = output
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .bytes
+        .clone();
+    let bytes = completed_client_frame(&bytes).to_vec();
+    let screen = terminal_screen::text(&bytes, 80, 24);
+    if let Some(evidence_dir) = &evidence_dir {
+        fs::create_dir_all(evidence_dir).expect("create visual evidence directory");
+        fs::write(evidence_dir.join("raw.ansi"), &bytes).expect("write raw ANSI evidence");
+        fs::write(evidence_dir.join("screen.txt"), &screen).expect("write screen evidence");
+    }
+    let backgrounds = terminal_screen::explicit_backgrounds(&bytes, 80, 24);
+    let gap_background = Some([34, 31, 34]);
+    let pane_default_background = Some([30, 30, 46]);
+    let origin_x = if show_sidebar { 21 } else { 0 };
+    let right_x = if show_sidebar { 51 } else { 40 };
+    assert_eq!(
+        backgrounds[80 + origin_x],
+        pane_default_background,
+        "the left edge border cell belongs to the pane, not the exterior"
+    );
+    assert_eq!(
+        screen.lines().nth(1).unwrap().chars().nth(origin_x),
+        Some('▏'),
+        "the border stroke must sit on the cell's outside edge"
+    );
+    let application_background = Some([18, 52, 86]);
+    let panes = if show_sidebar {
+        [
+            (21_u16, 0_u16, 29_u16, 24_u16),
+            (51, 0, 29, 12),
+            (51, 12, 29, 12),
+        ]
+    } else {
+        [(0, 0, 39, 24), (40, 0, 40, 12), (40, 12, 40, 12)]
+    };
+    let mut pane_interior = 0;
+    let mut pane_border = 0;
+    let mut outside = 0;
+    let mut pane_default_interior = 0;
+    let mut pane_default_border = 0;
+    let foregrounds = terminal_screen::explicit_foregrounds(&bytes, 80, 24);
+    let symbols: Vec<Vec<char>> = screen.lines().map(|line| line.chars().collect()).collect();
+    let mut application_interior = 0;
+    let mut gap_outside = 0;
+    for y in 0..24_u16 {
+        if show_sidebar {
+            assert_eq!(
+                symbols[usize::from(y)][19],
+                '▕',
+                "sidebar edge is right-aligned"
+            );
+            for x in [20, 50] {
+                assert_eq!(
+                    symbols[usize::from(y)].get(x).copied().unwrap_or(' '),
+                    ' ',
+                    "one blank column at sidebar and split"
+                );
+                assert_eq!(backgrounds[usize::from(y) * 80 + x], gap_background);
+            }
+        }
+        for x in origin_x as u16..80_u16 {
+            let background = backgrounds[usize::from(y) * 80 + usize::from(x)];
+            let owner = panes.iter().find(|(px, py, width, height)| {
+                x >= *px && x < px + width && y >= *py && y < py + height
+            });
+            match owner {
+                Some((px, py, width, height))
+                    if x == *px || x + 1 == px + width || y == *py || y + 1 == py + height =>
+                {
+                    pane_border += 1;
+                    pane_default_border += usize::from(background == pane_default_background);
+                    let expected_symbol = match (
+                        x == *px,
+                        x + 1 == px + width,
+                        y == *py,
+                        y + 1 == py + height,
+                    ) {
+                        (_, _, true, _) | (_, _, _, true) => ' ',
+                        (true, _, _, _) => '▏',
+                        (_, true, _, _) => '▕',
+                        _ => unreachable!(),
+                    };
+                    assert_eq!(
+                        symbols
+                            .get(usize::from(y))
+                            .and_then(|row| row.get(usize::from(x)))
+                            .copied()
+                            .unwrap_or(' '),
+                        expected_symbol,
+                        "border glyph {x},{y}"
+                    );
+                    let expected_foreground = if usize::from(*px) == right_x && *py == 12 {
+                        [169, 220, 118]
+                    } else {
+                        [91, 89, 92]
+                    };
+                    assert_eq!(
+                        foregrounds[usize::from(y) * 80 + usize::from(x)],
+                        Some(expected_foreground),
+                        "border focus color {x},{y}"
+                    );
+                }
+                Some(_) => {
+                    pane_interior += 1;
+                    pane_default_interior += usize::from(background == pane_default_background);
+                    application_interior += usize::from(background == application_background);
+                }
+                None => {
+                    outside += 1;
+                    gap_outside += usize::from(background == gap_background);
+                }
+            }
+        }
+    }
+    let census = format!(
+        "pane background ownership census\ninside: {pane_interior} cells, pane default: {pane_default_interior}, application: {application_interior}\nborder: {pane_border} cells, pane default: {pane_default_border}\noutside: {outside} cells, gap background: {gap_outside}\n"
+    );
+    eprint!("{census}");
+    if let Some(evidence_dir) = &evidence_dir {
+        fs::write(evidence_dir.join("config.toml"), &config).expect("write config evidence");
+        fs::write(evidence_dir.join("census.txt"), &census).expect("write census evidence");
+    }
+
+    assert_eq!(pane_interior, if show_sidebar { 1134 } else { 1574 });
+    assert_eq!(pane_border, if show_sidebar { 258 } else { 322 });
+    assert_eq!(outside, 24);
+    assert_eq!(
+        pane_default_interior + application_interior,
+        pane_interior,
+        "terminal interiors must use the pane default unless an application set the background"
+    );
+    assert_eq!(
+        application_interior, 11,
+        "the application truecolor background must remain visible"
+    );
+    assert_eq!(
+        pane_default_border, pane_border,
+        "edge-aligned border cells must belong to the pane background"
+    );
+    assert_eq!(
+        gap_outside, outside,
+        "every cell outside the pane frames must use the pane gap background"
+    );
+
+    assert_pixel_border_images(
+        &bytes,
+        if show_sidebar {
+            &[493; 6]
+        } else {
+            &[663, 663, 680, 680, 680, 680]
+        },
+    );
+
+    let streaming_start = output.lock().unwrap().bytes.len();
+    let end_sync = b"\x1b[?2026l";
+    for update in 1..=3 {
+        send_pane_shell_command(
+            &api_socket,
+            right_pane,
+            &format!("printf '\\033[2;2HSTREAM_%s' '{update}'"),
+        );
+        assert!(wait_until(
+            Duration::from_secs(5),
+            Duration::from_millis(10),
+            || {
+                let bytes = output.lock().unwrap().bytes.clone();
+                bytes
+                    .windows(end_sync.len())
+                    .rposition(|bytes| bytes == end_sync)
+                    .is_some_and(|end| {
+                        terminal_screen::text(&bytes[..end + end_sync.len()], 80, 24)
+                            .contains(&format!("STREAM_{update}"))
+                    })
+            }
+        ));
+    }
+    let streaming_bytes = output.lock().unwrap().bytes.clone();
+    assert!(
+        !streaming_bytes[streaming_start..]
+            .windows(5)
+            .any(|bytes| bytes == b"a=t,t"),
+        "text updates must reuse uploaded border images"
+    );
+    let mut streamed_frames = 0;
+    for (index, _) in streaming_bytes
+        .windows(end_sync.len())
+        .enumerate()
+        .filter(|(index, bytes)| *index >= streaming_start && *bytes == end_sync)
+    {
+        let frame_bytes = &streaming_bytes[..index + end_sync.len()];
+        if !terminal_screen::text(frame_bytes, 80, 24).contains("STREAM_") {
+            continue;
+        }
+        let backgrounds = terminal_screen::explicit_backgrounds(frame_bytes, 80, 24);
+        for y in 1..11_usize {
+            for x in right_x + 1..79_usize {
+                assert_eq!(
+                    backgrounds[y * 80 + x],
+                    pane_default_background,
+                    "streaming frame {streamed_frames}, pane body cell {x},{y}"
+                );
+            }
+        }
+        streamed_frames += 1;
+    }
+    assert!(streamed_frames >= 3, "observe each incremental update");
+    eprintln!("streaming background ownership: {streamed_frames} frames passed");
+    if let Some(evidence_dir) = &evidence_dir {
+        fs::write(evidence_dir.join("streaming.ansi"), &streaming_bytes)
+            .expect("write streaming evidence");
+    }
+
+    drop(client);
+    drop(server);
+    drop(cleanup);
+}
+
+#[test]
+fn single_pane_keeps_rounded_focused_frame() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let cleanup = TestBaseCleanup(base.clone());
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let config =
+        PANE_BACKGROUND_CONFIG.replace("pane_borders = \"auto\"", "pane_borders = \"always\"");
+    let server = spawn_server_with_config(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &client_socket,
+        &config,
+    );
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+    let created = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "single-rounded-pane",
+            "method": "workspace.create",
+            "params": {"cwd": &base, "focus": true, "label": "single-pane-proof"},
+        })
+        .to_string(),
+    );
+    let pane = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .expect("pane id");
+    send_pane_shell_command(&api_socket, pane, "printf 'SINGLE_PANE_READY\\n'");
+    let (client, output) = attach_pixel_client(&config_home, &runtime_dir, &api_socket);
+    assert!(
+        wait_until(Duration::from_secs(8), Duration::from_millis(20), || {
+            terminal_screen::text(
+                completed_client_frame(&output.lock().unwrap().bytes),
+                80,
+                24,
+            )
+            .contains("SINGLE_PANE_READY")
+        }),
+        "single pane did not render"
+    );
+    let bytes = completed_client_frame(&output.lock().unwrap().bytes).to_vec();
+    let screen = terminal_screen::text(&bytes, 80, 24);
+    assert_pixel_border_images(&bytes, &[1360, 1360]);
+    assert_eq!(
+        terminal_screen::explicit_backgrounds(&bytes, 80, 24),
+        vec![Some([30, 30, 46]); 80 * 24]
+    );
+    let foregrounds = terminal_screen::explicit_foregrounds(&bytes, 80, 24);
+    for y in 1..23 {
+        let symbols: Vec<char> = screen.lines().nth(y).unwrap().chars().collect();
+        assert_eq!(symbols[0], '▏');
+        assert_eq!(symbols[79], '▕');
+        for x in [0, 79] {
+            assert_eq!(
+                foregrounds[y * 80 + x],
+                Some([169, 220, 118]),
+                "single pane stays focused"
+            );
+        }
+    }
+    if let Some(root) = std::env::var_os("HERDR_VISUAL_EVIDENCE_DIR") {
+        let evidence = PathBuf::from(root).join("single-pane");
+        fs::create_dir_all(&evidence).unwrap();
+        fs::write(evidence.join("raw.ansi"), &bytes).unwrap();
+        fs::write(evidence.join("screen.txt"), screen).unwrap();
+        fs::write(evidence.join("config.toml"), config).unwrap();
+    }
+    drop(client);
+    drop(server);
+    drop(cleanup);
+}
+
+fn attach_pixel_client(
+    config_home: &PathBuf,
+    runtime_dir: &PathBuf,
+    api_socket: &PathBuf,
+) -> (SpawnedHerdr, SharedOutput) {
+    let client = spawn_client_process_with_args_and_env(
+        config_home,
+        runtime_dir,
+        api_socket,
+        &["client"],
+        &[("TERM_PROGRAM", "ghostty")],
+    );
+    let master = client._master.as_ref().expect("client PTY");
+    master
+        .resize(PtySize {
+            rows: 24,
+            cols: 80,
+            pixel_width: 80 * 17,
+            pixel_height: 24 * 36,
+        })
+        .expect("set exact host cell pixels");
+    let output = spawn_pty_drain(master.try_clone_reader().expect("clone client PTY reader"));
+    (client, output)
+}
+
+fn completed_client_frame(bytes: &[u8]) -> &[u8] {
+    let end = b"\x1b[?2026l";
+    bytes
+        .windows(end.len())
+        .rposition(|window| window == end)
+        .map_or(&[], |index| &bytes[..index + end.len()])
+}
+
+fn assert_pixel_border_images(bytes: &[u8], expected_widths: &[usize]) {
+    const CORNER: [&[u8; 12]; 12] = [
+        b".......+++++",
+        b".....++#####",
+        b"....++##++++",
+        b"...+##++    ",
+        b"..+##+      ",
+        b".++#+       ",
+        b".+#+        ",
+        b"+##+        ",
+        b"+#+         ",
+        b"+#+         ",
+        b"+#+         ",
+        b"+#+         ",
+    ];
+    use base64::Engine;
+    let packets = regex::bytes::Regex::new(r"\x1b_G([^;]*f=100[^;]*);([^\x1b]*)\x1b\\").unwrap();
+    let (inside, outside, green) = if cfg!(target_os = "macos") {
+        ([30, 30, 45], [33, 31, 34], [179, 219, 130])
+    } else {
+        ([30, 30, 46], [34, 31, 34], [169, 220, 118])
+    };
+    let mut widths = Vec::new();
+    let mut focused = 0;
+    let mut top_edges = 0;
+    for packet in packets.captures_iter(bytes) {
+        let png = base64::engine::general_purpose::STANDARD
+            .decode(&packet[2])
+            .unwrap();
+        let mut reader = png::Decoder::new(std::io::Cursor::new(png))
+            .read_info()
+            .unwrap();
+        let mut pixels = vec![0; reader.output_buffer_size()];
+        let info = reader.next_frame(&mut pixels).unwrap();
+        assert_eq!(info.height, 36);
+        assert_eq!(info.color_type, png::ColorType::Rgb);
+        let width = info.width as usize;
+        widths.push(width);
+        let middle = |y: usize| &pixels[(y * width + width / 2) * 3..][..3];
+        let top = middle(0) == outside;
+        top_edges += usize::from(top);
+        let stroke = middle(if top { 8 } else { 25 }).to_vec();
+        assert!(
+            stroke == [91, 89, 92] || stroke == green,
+            "unexpected stroke {stroke:?}"
+        );
+        focused += usize::from(stroke == green);
+        for y in 0..36_usize {
+            for x in 0..width {
+                let inset = x.min(width - 1 - x);
+                let depth = if top {
+                    y.saturating_sub(8)
+                } else {
+                    26_usize.saturating_sub(y)
+                };
+                let shape = if (top && y < 8) || (!top && y >= 27) {
+                    b'.'
+                } else if inset < 12 && depth < 12 {
+                    CORNER[depth][inset]
+                } else if depth < 2 || inset < 2 {
+                    b'#'
+                } else {
+                    b' '
+                };
+                let actual = &pixels[(y * width + x) * 3..][..3];
+                let expected: &[u8] = match shape {
+                    b'.' => &outside,
+                    b'#' => &stroke,
+                    b' ' => &inside,
+                    b'+' => {
+                        assert!(
+                            actual != outside && actual != inside && actual != stroke,
+                            "antialiased pixel {x},{y}"
+                        );
+                        for channel in 0..3 {
+                            let low = inside[channel].min(outside[channel]).min(stroke[channel]);
+                            let high = inside[channel].max(outside[channel]).max(stroke[channel]);
+                            assert!(
+                                (low..=high).contains(&actual[channel]),
+                                "corner blend {x},{y}"
+                            );
+                        }
+                        continue;
+                    }
+                    _ => unreachable!(),
+                };
+                assert_eq!(actual, expected, "border pixel {x},{y}");
+            }
+        }
+    }
+    widths.sort_unstable();
+    assert_eq!(widths, expected_widths);
+    assert_eq!(
+        top_edges * 2,
+        widths.len(),
+        "one top and bottom edge per pane"
+    );
+    assert_eq!(focused, 2, "both focused horizontal edges stay green");
+    eprintln!("pixel borders: {} PNGs, 12-pixel rounded corners, 2-pixel strokes, 8 + 9 = 17-pixel vertical gutter", widths.len());
 }
 
 fn read_output(output: &SharedOutput) -> String {

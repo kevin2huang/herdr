@@ -35,6 +35,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) theme_name: String,
     pub(super) theme_runtime: crate::app::state::ThemeRuntimeConfig,
     pub(super) palette: Palette,
+    pub(super) pixel_pane_borders: bool,
     pub(super) keybinds: LiveKeybindConfig,
     pub(super) local_keys: crate::config::KeysConfig,
     pub(super) keybinding_source: ClientShellKeybindingSource,
@@ -844,6 +845,7 @@ pub(crate) struct ClientShellState {
     /// pane surface always remains an exact snapshot pair.
     pub(super) pending_pane_surface: Option<PaneSurfaceFrame>,
     pub(super) graphics: crate::kitty_graphics::surface::ClientState,
+    pub(super) pane_frames: pane_frames::PaneFrames,
     pub(super) graphics_cell_size: crate::kitty_graphics::HostCellSize,
     pub(super) popup_terminal_id: Option<String>,
     pub(super) sidebar_collapsed: bool,
@@ -1003,6 +1005,7 @@ impl ClientShellState {
             pane_surface: None,
             pending_pane_surface: None,
             graphics: crate::kitty_graphics::surface::ClientState::default(),
+            pane_frames: pane_frames::PaneFrames::default(),
             graphics_cell_size: crate::kitty_graphics::HostCellSize {
                 width_px: 1,
                 height_px: 1,
@@ -1286,6 +1289,7 @@ impl ClientShellState {
         }
         self.active_snapshot_generation = generation;
         self.graphics.set_scope(&graphics_scope);
+        self.pane_frames.set_scope(&graphics_scope);
         let command_bindings_changed = self.snapshot.as_ref().is_none_or(|current| {
             current.commands.len() != snapshot.commands.len()
                 || current

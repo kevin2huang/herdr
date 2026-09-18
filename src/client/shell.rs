@@ -26,6 +26,7 @@ mod mouse;
 mod notification_policy;
 mod notifications;
 mod overlay_input;
+mod pane_frames;
 mod preferences;
 mod render;
 mod scroll;
@@ -49,7 +50,7 @@ use crossterm::event::KeyCode;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use unicode_width::UnicodeWidthStr;
 
 use super::endpoint::{ClientEndpointId, ClientEndpointStatus, SavedSshEndpoint};
@@ -276,6 +277,147 @@ fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
         })
     });
     target.graphics.clear();
+}
+
+fn apply_pane_gap_background(
+    target: &mut FrameData,
+    panes: &[crate::protocol::PaneSurfacePane],
+    area: Rect,
+    background: Color,
+) {
+    if background == Color::Reset
+        || area.is_empty()
+        || area.x >= target.width
+        || area.y >= target.height
+    {
+        return;
+    }
+    let background = crate::protocol::color_to_u32(background);
+    let width = area.width.min(target.width.saturating_sub(area.x));
+    let height = area.height.min(target.height.saturating_sub(area.y));
+    let mut panes = panes
+        .iter()
+        .map(|pane| Rect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height))
+        .filter(|body| !body.is_empty())
+        .collect::<Vec<_>>();
+    panes.sort_unstable_by_key(|body| body.x);
+
+    for y in 0..height {
+        let mut covered_until = 0;
+        for body in panes.iter().filter(|body| y >= body.y && y < body.bottom()) {
+            let start = body.x.min(width);
+            let end = body.right().min(width);
+            if start > covered_until {
+                set_frame_row_background(
+                    target,
+                    area.x.saturating_add(covered_until),
+                    area.x.saturating_add(start),
+                    area.y.saturating_add(y),
+                    background,
+                );
+            }
+            covered_until = covered_until.max(end);
+            if covered_until >= width {
+                break;
+            }
+        }
+        if covered_until < width {
+            set_frame_row_background(
+                target,
+                area.x.saturating_add(covered_until),
+                area.x.saturating_add(width),
+                area.y.saturating_add(y),
+                background,
+            );
+        }
+    }
+}
+
+fn apply_pane_default_background(
+    target: &mut FrameData,
+    panes: &[crate::protocol::PaneSurfacePane],
+    area: Rect,
+    background: Color,
+) {
+    if background == Color::Reset
+        || area.is_empty()
+        || area.x >= target.width
+        || area.y >= target.height
+    {
+        return;
+    }
+    let background = crate::protocol::color_to_u32(background);
+    let reset = crate::protocol::color_to_u32(Color::Reset);
+    let width = area.width.min(target.width.saturating_sub(area.x));
+    let height = area.height.min(target.height.saturating_sub(area.y));
+    for pane in panes {
+        let body = Rect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height);
+        let start_x = body.x.min(width);
+        let end_x = body.right().min(width);
+        let start_y = body.y.min(height);
+        let end_y = body.bottom().min(height);
+        apply_default_background_to_rect(
+            target,
+            Rect::new(
+                area.x.saturating_add(start_x),
+                area.y.saturating_add(start_y),
+                end_x.saturating_sub(start_x),
+                end_y.saturating_sub(start_y),
+            ),
+            background,
+            reset,
+        );
+    }
+}
+
+fn apply_default_background_to_rect(
+    target: &mut FrameData,
+    rect: Rect,
+    background: u32,
+    reset: u32,
+) {
+    let end_x = rect.right().min(target.width);
+    let end_y = rect.bottom().min(target.height);
+    for y in rect.y.min(end_y)..end_y {
+        let row_start = usize::from(y) * usize::from(target.width);
+        let start = row_start.saturating_add(usize::from(rect.x.min(end_x)));
+        let end = row_start.saturating_add(usize::from(end_x));
+        if let Some(cells) = target.cells.get_mut(start..end) {
+            apply_default_background_to_cells(cells, background, reset);
+        }
+    }
+}
+
+fn apply_default_background_to_cells(
+    cells: &mut [crate::protocol::CellData],
+    background: u32,
+    reset: u32,
+) {
+    if background == reset {
+        return;
+    }
+    for cell in cells {
+        if cell.bg == reset {
+            cell.bg = background;
+        }
+    }
+}
+
+fn set_frame_row_background(
+    target: &mut FrameData,
+    start_x: u16,
+    end_x: u16,
+    y: u16,
+    background: u32,
+) {
+    let row_start = usize::from(y) * usize::from(target.width);
+    let start = row_start.saturating_add(usize::from(start_x));
+    let end = row_start.saturating_add(usize::from(end_x));
+    if let Some(cells) = target.cells.get_mut(start..end) {
+        for cell in cells {
+            cell.bg = background;
+        }
+    }
 }
 
 #[cfg(test)]

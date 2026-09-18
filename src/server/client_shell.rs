@@ -495,7 +495,7 @@ fn split_hit_rect(
             Rect::new(split.pos, split.area.y, 1, split.area.height)
         }
         (ratatui::layout::Direction::Horizontal, true, true) => {
-            let start = split.pos.saturating_sub(1);
+            let start = split.pos.saturating_sub(2).max(split.area.x);
             Rect::new(
                 start,
                 split.area.y,
@@ -513,7 +513,7 @@ fn split_hit_rect(
             Rect::new(split.area.x, split.pos, split.area.width, 1)
         }
         (ratatui::layout::Direction::Vertical, true, true) => {
-            let start = split.pos.saturating_sub(1);
+            let start = split.pos.saturating_sub(2).max(split.area.y);
             Rect::new(
                 split.area.x,
                 start,
@@ -621,7 +621,7 @@ mod tests {
         );
         assert_eq!(
             split_hit_rect(&horizontal, true, true, &[]),
-            Some(Rect::new(19, 3, 2, 12))
+            Some(Rect::new(18, 3, 3, 12))
         );
         assert_eq!(
             split_hit_rect(&horizontal, false, true, &[]),
@@ -638,7 +638,7 @@ mod tests {
         };
         assert_eq!(
             split_hit_rect(&vertical, true, true, &[]),
-            Some(Rect::new(2, 8, 40, 2))
+            Some(Rect::new(2, 7, 40, 3))
         );
 
         let edge = crate::layout::SplitBorder {
@@ -651,6 +651,17 @@ mod tests {
         assert_eq!(
             split_hit_rect(&edge, true, true, &[]),
             Some(Rect::new(0, 0, 1, 4))
+        );
+        let narrow_nonzero = crate::layout::SplitBorder {
+            pos: 11,
+            direction: ratatui::layout::Direction::Horizontal,
+            ratio: 0.5,
+            area: Rect::new(10, 3, 2, 4),
+            path: Vec::new(),
+        };
+        assert_eq!(
+            split_hit_rect(&narrow_nonzero, true, true, &[]),
+            Some(Rect::new(10, 3, 2, 4))
         );
         assert_eq!(split_hit_rect(&edge, false, true, &[]), None);
         assert_eq!(

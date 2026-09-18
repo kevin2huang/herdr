@@ -178,6 +178,10 @@ impl ClientShellState {
             _ => (None, None),
         };
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, rows));
+        buffer.set_style(
+            buffer.area,
+            Style::default().bg(self.config.palette.pane_gap_bg),
+        );
         self.hits = render::render_shell(
             &mut buffer,
             layout,
@@ -315,6 +319,18 @@ impl ClientShellState {
             frame.cells[start..start + usize::from(bar.width)].to_vec()
         });
         blit_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+        apply_pane_default_background(
+            &mut frame,
+            &surface.panes,
+            layout.pane_surface,
+            self.config.palette.pane_default_bg,
+        );
+        apply_pane_gap_background(
+            &mut frame,
+            &surface.panes,
+            layout.pane_surface,
+            self.config.palette.pane_gap_bg,
+        );
         restore_mode_bar(&mut frame, mode_bar, mode_bar_cells.as_deref());
         let mut occlusion = crate::kitty_graphics::surface::Occlusion::default();
         let has_selection = self
@@ -365,7 +381,12 @@ impl ClientShellState {
                         hit.scroll,
                         &self.config.palette,
                         crate::terminal_theme::TerminalTheme {
-                            background: self.host_background,
+                            background: match self.config.palette.pane_default_bg {
+                                Color::Rgb(r, g, b) => {
+                                    Some(crate::terminal_theme::RgbColor { r, g, b })
+                                }
+                                _ => self.host_background,
+                            },
                             ..Default::default()
                         },
                     );
@@ -540,9 +561,16 @@ impl ClientShellState {
                 let mut composed = frame.to_ratatui_buffer()?;
                 let block = ratatui::widgets::Block::default()
                     .borders(ratatui::widgets::Borders::ALL)
+                    .border_set(crate::ui::PANE_BORDER_SET)
                     .border_style(ratatui::style::Style::default().fg(self.config.palette.accent))
                     .title(popup.title.clone())
-                    .style(ratatui::style::Style::default().bg(self.config.palette.panel_bg));
+                    .style(ratatui::style::Style::default().bg(
+                        if self.config.palette.pane_default_bg == Color::Reset {
+                            self.config.palette.panel_bg
+                        } else {
+                            self.config.palette.pane_default_bg
+                        },
+                    ));
                 ratatui::widgets::Widget::render(
                     ratatui::widgets::Clear,
                     geometry.outer,
@@ -551,6 +579,15 @@ impl ClientShellState {
                 ratatui::widgets::Widget::render(block, geometry.outer, &mut composed);
                 frame.replace_from_ratatui_buffer_preserving_effects(&composed, None);
                 blit_pane_surface(&mut frame, &popup.frame, geometry.inner);
+                let popup_background = self.config.palette.pane_default_bg;
+                if popup_background != Color::Reset {
+                    apply_default_background_to_rect(
+                        &mut frame,
+                        geometry.outer,
+                        crate::protocol::color_to_u32(popup_background),
+                        crate::protocol::color_to_u32(Color::Reset),
+                    );
+                }
                 self.hits.popup = Some(PaneHit {
                     rect: geometry.outer,
                     inner_rect: geometry.inner,

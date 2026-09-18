@@ -176,14 +176,20 @@ impl ClientShellState {
             let (cols, rows) = self.last_composed_size.unwrap_or_default();
             self.layout(cols, rows).pane_surface
         });
+        let pane_background = crate::protocol::color_to_u32(self.config.palette.pane_default_bg);
+        let reset = crate::protocol::color_to_u32(Color::Reset);
         let composed_patch = fast_path_area.map(|area| ClientComposedSurfacePatch {
             rows: patch
                 .rows
                 .iter()
-                .map(|row| crate::protocol::PaneSurfacePatchRow {
-                    x: area.x.saturating_add(row.x),
-                    y: area.y.saturating_add(row.y),
-                    cells: row.cells.clone(),
+                .map(|row| {
+                    let mut cells = row.cells.clone();
+                    apply_default_background_to_cells(&mut cells, pane_background, reset);
+                    crate::protocol::PaneSurfacePatchRow {
+                        x: area.x.saturating_add(row.x),
+                        y: area.y.saturating_add(row.y),
+                        cells,
+                    }
                 })
                 .collect(),
             cursor: patch

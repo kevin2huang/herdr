@@ -17,6 +17,18 @@ use crate::layout::PaneInfo;
 use crate::popup_size::resolve_popup_geometry;
 use crate::terminal::{TerminalRuntime, TerminalRuntimeRegistry};
 
+// Outer-edge strokes keep the whole border cell on the pane side of the frame.
+pub(crate) const PANE_BORDER_SET: ratatui::symbols::border::Set = ratatui::symbols::border::Set {
+    top_left: "🭽",
+    top_right: "🭾",
+    bottom_left: "🭼",
+    bottom_right: "🭿",
+    vertical_left: "▏",
+    vertical_right: "▕",
+    horizontal_top: "▔",
+    horizontal_bottom: "▁",
+};
+
 pub(crate) fn pane_is_scrolled_back(rt: &TerminalRuntime) -> bool {
     rt.scroll_metrics()
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
@@ -116,11 +128,11 @@ pub(crate) fn apply_pane_chrome(
             let right_neighbor = multi_pane.then(|| pane_to_right(&info, &panes)).flatten();
             let below_neighbor = multi_pane.then(|| pane_below(&info, &panes)).flatten();
 
-            if multi_pane && pane_gaps && !pane_borders.draws_borders() {
+            if multi_pane && pane_gaps {
                 if right_neighbor.is_some() {
                     info.rect.width = shrink_for_one_cell_gap(info.rect.width);
                 }
-                if below_neighbor.is_some() {
+                if below_neighbor.is_some() && !bordered {
                     info.rect.height = shrink_for_one_cell_gap(info.rect.height);
                 }
             }
@@ -459,6 +471,25 @@ fn render_pane_borders(
     frame: &mut Frame,
 ) {
     if !app.pane_borders.draws_borders() || pane_infos.iter().all(|info| info.borders.is_empty()) {
+        return;
+    }
+
+    if app.pane_gaps {
+        for info in pane_infos {
+            let color = if info.is_focused {
+                app.palette.accent
+            } else {
+                app.palette.overlay0
+            };
+            frame.render_widget(
+                Block::default()
+                    .borders(info.borders)
+                    .border_set(PANE_BORDER_SET)
+                    .border_style(Style::default().fg(color)),
+                info.rect,
+            );
+        }
+        render_pane_border_titles(app, ws, pane_infos, frame);
         return;
     }
 
@@ -972,7 +1003,7 @@ mod tests {
     }
 
     #[test]
-    fn pane_gaps_keep_independent_bordered_panes() {
+    fn pane_gaps_reserve_a_column_but_no_row_between_frames() {
         let mut workspace = Workspace::test_new("test");
         let root = workspace.tabs[0].root_pane;
         let right = workspace.test_split(ratatui::layout::Direction::Horizontal);
@@ -987,9 +1018,31 @@ mod tests {
         let left = infos.iter().find(|info| info.id == root).unwrap();
         let right = infos.iter().find(|info| info.id == right).unwrap();
 
-        assert_eq!(left.rect.x + left.rect.width, right.rect.x);
+        assert_eq!(left.rect, Rect::new(0, 0, 49, 20));
+        assert_eq!(right.rect, Rect::new(50, 0, 50, 20));
+        assert_eq!(left.rect.right() + 1, right.rect.x);
         assert_eq!(left.borders, Borders::ALL);
         assert_eq!(right.borders, Borders::ALL);
+
+        let mut workspace = Workspace::test_new("test");
+        let root = workspace.tabs[0].root_pane;
+        let bottom = workspace.test_split(ratatui::layout::Direction::Vertical);
+        workspace.tabs[0].layout.focus_pane(root);
+
+        let infos = apply_pane_chrome(
+            workspace.tabs[0].layout.panes(Rect::new(0, 0, 100, 20)),
+            PaneBordersConfig::Auto,
+            true,
+            true,
+        );
+        let top = infos.iter().find(|info| info.id == root).unwrap();
+        let bottom = infos.iter().find(|info| info.id == bottom).unwrap();
+
+        assert_eq!(top.rect, Rect::new(0, 0, 100, 10));
+        assert_eq!(bottom.rect, Rect::new(0, 10, 100, 10));
+        assert_eq!(top.rect.bottom(), bottom.rect.y);
+        assert_eq!(top.borders, Borders::ALL);
+        assert_eq!(bottom.borders, Borders::ALL);
     }
 
     #[test]

@@ -1,6 +1,257 @@
 use super::*;
 
 #[test]
+fn disabled_pixel_chrome_preserves_font_underlines_and_retires_images() {
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.pixel_pane_borders = false;
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.set_graphics_cell_size(17, 36);
+    for (enabled, command) in [(false, None), (true, Some(b"a=t")), (false, Some(b"a=d"))] {
+        state.config.pixel_pane_borders = enabled;
+        let frame = state.compose(100, 30).expect("tab frame");
+        let rect = state.hits.tabs[0].0;
+        for x in rect.x..rect.right() {
+            let cell = &frame.cells[usize::from(rect.y) * 100 + usize::from(x)];
+            assert_eq!(cell.modifier & Modifier::UNDERLINED.bits() != 0, !enabled);
+        }
+        if let Some(command) = command {
+            assert!(frame.graphics.windows(3).any(|bytes| bytes == command));
+        } else {
+            assert!(frame.graphics.is_empty());
+        }
+    }
+}
+
+#[test]
+fn pane_default_background_recolors_only_reset_cells_inside_panes() {
+    let mut frame = FrameData::from_ratatui_buffer(
+        &Buffer::with_lines(["abcdefghi", "jklmnopqr", "stuvwxyz0", "123456789"]),
+        None,
+    );
+    let named = crate::protocol::color_to_u32(Color::Blue);
+    let indexed = crate::protocol::color_to_u32(Color::Indexed(42));
+    let rgb = crate::protocol::color_to_u32(Color::Rgb(18, 52, 86));
+    frame.cells[11].bg = named;
+    frame.cells[12].bg = indexed;
+    frame.cells[20].bg = rgb;
+    let pane = |pane_id: &str, rect: Rect, inner_rect: Rect| PaneSurfacePane {
+        pane_id: pane_id.to_owned(),
+        content_revision: 0,
+        rect: rect.into(),
+        inner_rect: inner_rect.into(),
+        scrollbar_rect: None,
+        scroll: None,
+        focused: pane_id == "left",
+        mouse_reporting: false,
+        sgr_pixel_mouse: false,
+        alternate_screen_active: false,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let panes = [
+        pane("left", Rect::new(0, 0, 4, 4), Rect::new(1, 1, 2, 2)),
+        pane("right", Rect::new(5, 0, 3, 4), Rect::new(6, 1, 1, 2)),
+    ];
+    let unchanged = frame.clone();
+
+    apply_pane_default_background(&mut frame, &panes, Rect::new(1, 0, 8, 4), Color::Reset);
+    assert_eq!(frame, unchanged);
+
+    apply_pane_default_background(
+        &mut frame,
+        &panes,
+        Rect::new(1, 0, 8, 4),
+        Color::Rgb(30, 30, 46),
+    );
+
+    let pane_background = crate::protocol::color_to_u32(Color::Rgb(30, 30, 46));
+    let reset = crate::protocol::color_to_u32(Color::Reset);
+    for (index, expected) in [
+        (11, named),
+        (12, indexed),
+        (16, pane_background),
+        (20, rgb),
+        (21, pane_background),
+        (25, pane_background),
+    ] {
+        assert_eq!(frame.cells[index].bg, expected, "cell {index}");
+    }
+    for (index, cell) in frame.cells.iter().enumerate() {
+        if [11, 12, 20].contains(&index) {
+            continue;
+        }
+        let expected = if [0, 5].contains(&(index % 9)) {
+            reset
+        } else {
+            pane_background
+        };
+        assert_eq!(cell.bg, expected, "pane-owned cell {index}");
+    }
+}
+
+#[test]
+fn pane_gap_background_preserves_pane_frames_and_colors_only_unowned_cells() {
+    let mut frame = FrameData::from_ratatui_buffer(
+        &Buffer::with_lines(["abcdefghi", "jklmnopqr", "stuvwxyz0", "123456789"]),
+        None,
+    );
+    let split_fg = crate::protocol::color_to_u32(Color::Green);
+    for index in [3, 7, 13, 15, 29, 34] {
+        let cell = &mut frame.cells[index];
+        cell.fg = split_fg;
+        cell.symbol = "│".to_owned();
+    }
+    let unchanged = frame.clone();
+    let pane = |pane_id: &str, rect: Rect, inner_rect: Rect| PaneSurfacePane {
+        pane_id: pane_id.to_owned(),
+        content_revision: 0,
+        rect: rect.into(),
+        inner_rect: inner_rect.into(),
+        scrollbar_rect: None,
+        scroll: None,
+        focused: pane_id == "left",
+        mouse_reporting: false,
+        sgr_pixel_mouse: false,
+        alternate_screen_active: false,
+        pixel_width: 0,
+        pixel_height: 0,
+    };
+    let panes = [
+        pane("right", Rect::new(5, 0, 3, 4), Rect::new(6, 1, 1, 2)),
+        pane("left", Rect::new(0, 0, 4, 4), Rect::new(1, 1, 2, 2)),
+    ];
+
+    apply_pane_gap_background(&mut frame, &panes, Rect::new(1, 0, 8, 4), Color::Reset);
+    assert_eq!(frame, unchanged);
+
+    apply_pane_gap_background(
+        &mut frame,
+        &panes,
+        Rect::new(1, 0, 8, 4),
+        Color::Rgb(34, 31, 34),
+    );
+
+    let gap_bg = crate::protocol::color_to_u32(Color::Rgb(34, 31, 34));
+    let reset_bg = crate::protocol::color_to_u32(Color::Reset);
+    for index in [3, 7, 13, 15, 29, 34] {
+        assert_eq!(
+            frame.cells[index].bg, reset_bg,
+            "exterior painting must preserve pane border cell {index}"
+        );
+        assert_eq!(frame.cells[index].fg, split_fg);
+    }
+    for y in 0..4_usize {
+        for x in 1..9_usize {
+            let index = y * 9 + x;
+            let expected = if x == 5 { gap_bg } else { reset_bg };
+            assert_eq!(frame.cells[index].bg, expected, "canvas cell {index}");
+        }
+    }
+    for index in [0, 9, 18, 27] {
+        assert_eq!(frame.cells[index].bg, reset_bg, "outside cell {index}");
+    }
+    assert_eq!(
+        frame
+            .cells
+            .iter()
+            .map(|cell| cell.symbol.clone())
+            .collect::<Vec<_>>(),
+        unchanged
+            .cells
+            .iter()
+            .map(|cell| cell.symbol.clone())
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn pane_background_includes_visible_and_hidden_scrollbar_lanes() {
+    for (name, outer, inner, edge) in [
+        (
+            "bordered hidden scrollbar",
+            Rect::new(0, 0, 7, 4),
+            Rect::new(1, 1, 4, 2),
+            "▕",
+        ),
+        (
+            "shared border with hidden scrollbar",
+            Rect::new(0, 0, 6, 4),
+            Rect::new(1, 1, 4, 2),
+            " ",
+        ),
+        (
+            "borderless visible scrollbar",
+            Rect::new(0, 0, 6, 4),
+            Rect::new(0, 0, 5, 4),
+            "▕",
+        ),
+        (
+            "border without scrollbar",
+            Rect::new(0, 0, 6, 4),
+            Rect::new(1, 1, 4, 2),
+            "▕",
+        ),
+        (
+            "borderless without scrollbar",
+            Rect::new(0, 0, 6, 4),
+            Rect::new(0, 0, 6, 4),
+            "X",
+        ),
+    ] {
+        let area = Rect::new(1, 1, 7, 4);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 9, 6));
+        for y in inner.y..inner.bottom() {
+            buffer[(area.x + outer.right() - 1, area.y + y)]
+                .set_symbol(edge)
+                .set_fg(Color::Green);
+        }
+        let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
+        let pane = PaneSurfacePane {
+            pane_id: name.to_owned(),
+            content_revision: 0,
+            rect: outer.into(),
+            inner_rect: inner.into(),
+            scrollbar_rect: None,
+            scroll: None,
+            focused: false,
+            mouse_reporting: false,
+            sgr_pixel_mouse: false,
+            alternate_screen_active: false,
+            pixel_width: 0,
+            pixel_height: 0,
+        };
+        let unchanged = frame.clone();
+        apply_pane_default_background(
+            &mut frame,
+            std::slice::from_ref(&pane),
+            area,
+            Color::Rgb(30, 30, 46),
+        );
+        apply_pane_gap_background(&mut frame, &[pane], area, Color::Rgb(34, 31, 34));
+        for y in 0..area.height {
+            for x in 0..area.width {
+                let index =
+                    usize::from(area.y + y) * usize::from(frame.width) + usize::from(area.x + x);
+                let expected = if outer.contains((x, y).into()) {
+                    Color::Rgb(30, 30, 46)
+                } else {
+                    Color::Rgb(34, 31, 34)
+                };
+                assert_eq!(
+                    frame.cells[index].bg,
+                    crate::protocol::color_to_u32(expected),
+                    "{name}, {x},{y}"
+                );
+                assert_eq!(frame.cells[index].fg, unchanged.cells[index].fg);
+                assert_eq!(frame.cells[index].symbol, unchanged.cells[index].symbol);
+            }
+        }
+    }
+}
+
+#[test]
 fn tab_overflow_controls_scroll_the_client_owned_tab_bar() {
     let mut snapshot = snapshot();
     snapshot.tabs.extend((2..=8).map(|number| ClientShellTab {

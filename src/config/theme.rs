@@ -102,6 +102,8 @@ impl ThemeConfig {
 pub struct CustomThemeColors {
     pub accent: Option<String>,
     pub panel_bg: Option<String>,
+    pub pane_gap_bg: Option<String>,
+    pub pane_default_bg: Option<String>,
     pub sidebar_bg: Option<String>,
     pub active_row_bg: Option<String>,
     pub selection_bg: Option<String>,
@@ -131,6 +133,8 @@ pub struct CustomThemeColors {
 pub struct ModeThemeColors {
     pub accent: Option<String>,
     pub panel_bg: Option<String>,
+    pub pane_gap_bg: Option<String>,
+    pub pane_default_bg: Option<String>,
     pub sidebar_bg: Option<String>,
     pub active_row_bg: Option<String>,
     pub selection_bg: Option<String>,
@@ -294,6 +298,8 @@ name = "nord"
 
 [theme.custom]
 panel_bg = "#1e1e2e"
+pane_gap_bg = "#221f22"
+pane_default_bg = "#1e1e2e"
 sidebar_bg = "#181825"
 active_row_bg = "#313244"
 selection_bg = "#45475a"
@@ -304,6 +310,8 @@ red = "rgb(255, 85, 85)"
         assert_eq!(config.theme.name.as_deref(), Some("nord"));
         let custom = config.theme.custom.as_ref().unwrap();
         assert_eq!(custom.panel_bg.as_deref(), Some("#1e1e2e"));
+        assert_eq!(custom.pane_gap_bg.as_deref(), Some("#221f22"));
+        assert_eq!(custom.pane_default_bg.as_deref(), Some("#1e1e2e"));
         assert_eq!(custom.sidebar_bg.as_deref(), Some("#181825"));
         assert_eq!(custom.active_row_bg.as_deref(), Some("#313244"));
         assert_eq!(custom.selection_bg.as_deref(), Some("#45475a"));
@@ -322,9 +330,13 @@ accent = "#010203"
 accent = "#040506"
 text = "#070809"
 selection_bg = "#101112"
+pane_gap_bg = "#161718"
+pane_default_bg = "#171819"
 
 [theme.custom.dark]
 panel_bg = "#0a0b0c"
+pane_gap_bg = "#191a1b"
+pane_default_bg = "#1a1b1c"
 sidebar_bg = "#0d0e0f"
 active_row_bg = "#131415"
 "##;
@@ -335,8 +347,12 @@ active_row_bg = "#131415"
         assert_eq!(light.accent.as_deref(), Some("#040506"));
         assert_eq!(light.text.as_deref(), Some("#070809"));
         assert_eq!(light.selection_bg.as_deref(), Some("#101112"));
+        assert_eq!(light.pane_gap_bg.as_deref(), Some("#161718"));
+        assert_eq!(light.pane_default_bg.as_deref(), Some("#171819"));
         let dark = custom.dark.as_ref().unwrap();
         assert_eq!(dark.panel_bg.as_deref(), Some("#0a0b0c"));
+        assert_eq!(dark.pane_gap_bg.as_deref(), Some("#191a1b"));
+        assert_eq!(dark.pane_default_bg.as_deref(), Some("#1a1b1c"));
         assert_eq!(dark.sidebar_bg.as_deref(), Some("#0d0e0f"));
         assert_eq!(dark.active_row_bg.as_deref(), Some("#131415"));
     }

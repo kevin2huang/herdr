@@ -44,6 +44,10 @@ pub(crate) struct Occlusion {
 }
 
 impl Occlusion {
+    pub(crate) fn covers_rect(&self, rect: Rect) -> bool {
+        self.regions.iter().any(|region| region.intersects(rect))
+    }
+
     pub(crate) fn cover(&mut self, rect: Rect) {
         if !rect.is_empty() {
             self.regions.push(rect);

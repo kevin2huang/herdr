@@ -71,6 +71,18 @@
           "description": "Override the panel_bg color token on top of the base theme. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
+          "key": "theme.custom.pane_gap_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Set the background of Herdr-owned pane canvas cells, including exterior gaps and temporary resize slack, without changing pane interiors. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.pane_default_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Set the background of default-background cells in terminal content, border and scrollbar lanes, and popup terminals while preserving explicit application backgrounds. Applies to full and incremental redraws. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
           "key": "theme.custom.sidebar_bg",
           "type": "color",
           "default": "unset",
@@ -185,6 +197,18 @@
           "description": "Override the panel_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
+          "key": "theme.custom.light.pane_gap_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the pane_gap_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.light.pane_default_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the pane_default_bg color token when auto_switch selects a light appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
           "key": "theme.custom.light.sidebar_bg",
           "type": "color",
           "default": "unset",
@@ -297,6 +321,18 @@
           "type": "color",
           "default": "unset",
           "description": "Override the panel_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.pane_gap_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the pane_gap_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
+        },
+        {
+          "key": "theme.custom.dark.pane_default_bg",
+          "type": "color",
+          "default": "unset",
+          "description": "Override the pane_default_bg color token when auto_switch selects a dark appearance. Applied after theme.custom. Accepts hex, named colors, rgb(r,g,b), or reset aliases."
         },
         {
           "key": "theme.custom.dark.sidebar_bg",

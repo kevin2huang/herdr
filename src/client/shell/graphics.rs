@@ -21,7 +21,9 @@ impl ClientShellState {
     }
 
     pub(crate) fn take_pending_graphics_cleanup(&mut self) -> Vec<u8> {
-        self.graphics.take_pending_cleanup()
+        let mut bytes = self.graphics.take_pending_cleanup();
+        bytes.extend(self.pane_frames.take_pending_cleanup());
+        bytes
     }
 
     pub(crate) fn set_graphics_cell_size(&mut self, width_px: u32, height_px: u32) {
@@ -56,5 +58,35 @@ impl ClientShellState {
             self.graphics_cell_size,
             occlusion,
         );
+        if !self.config.pixel_pane_borders || self.endpoint_error.is_some() {
+            frame.graphics.extend(self.pane_frames.cleanup());
+            return;
+        }
+        let panes = self
+            .pane_surface
+            .as_ref()
+            .map_or(&[][..], |surface| surface.panes.as_slice());
+        let active_tab = self
+            .snapshot
+            .as_deref()
+            .and_then(|snapshot| snapshot.focused_tab_id.as_deref())
+            .and_then(|focused| {
+                self.hits
+                    .tabs
+                    .iter()
+                    .find_map(|(rect, tab_id)| (tab_id == focused).then_some(*rect))
+            });
+        let chrome_graphics = self.pane_frames.compose(
+            frame,
+            pane_frames::ChromeLayout {
+                panes,
+                pane_area: layout.pane_surface,
+                active_tab,
+            },
+            self.graphics_cell_size,
+            &self.config.palette,
+            occlusion,
+        );
+        frame.graphics.extend(chrome_graphics);
     }
 }

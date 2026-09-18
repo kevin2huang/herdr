@@ -180,8 +180,12 @@ fn desktop_composition_keeps_shell_outside_origin_relative_surface() {
 #[test]
 fn client_composes_popup_terminal_content_inside_client_owned_chrome() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.palette.pane_default_bg = Color::Rgb(30, 30, 46);
     state.set_snapshot(Box::new(snapshot()));
-    state.set_pane_surface(surface_with_popup());
+    let mut surface = surface_with_popup();
+    let explicit = crate::protocol::color_to_u32(Color::Rgb(18, 52, 86));
+    surface.popup.as_mut().expect("popup").frame.cells[0].bg = explicit;
+    state.set_pane_surface(surface);
 
     let frame = state.compose(106, 20).expect("popup frame");
     let popup = state.hits.popup.as_ref().expect("popup hit geometry");
@@ -189,6 +193,18 @@ fn client_composes_popup_terminal_content_inside_client_owned_chrome() {
     assert_eq!(popup.rect.height, 5);
     assert_eq!(popup.inner_rect.width, 9);
     assert_eq!(popup.inner_rect.height, 3);
+    let pane_background = crate::protocol::color_to_u32(Color::Rgb(30, 30, 46));
+    for y in popup.inner_rect.y..popup.inner_rect.bottom() {
+        for x in popup.inner_rect.x..popup.inner_rect.right() {
+            let background = frame.cells[(y * frame.width + x) as usize].bg;
+            let expected = if (x, y) == (popup.inner_rect.x, popup.inner_rect.y) {
+                explicit
+            } else {
+                pane_background
+            };
+            assert_eq!(background, expected, "popup cell at {x},{y}");
+        }
+    }
     let text = frame
         .cells
         .chunks(frame.width as usize)
@@ -1038,6 +1054,7 @@ fn pending_scroll_target_does_not_relabel_an_older_surface() {
 #[test]
 fn retained_surface_patch_updates_only_pane_cells_without_recomposing_chrome() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.palette.pane_default_bg = Color::Rgb(30, 30, 46);
     state.set_snapshot(Box::new(snapshot()));
     let pane_surface = surface();
     let mut updated_pane = pane_surface.panes[0].clone();
@@ -1053,17 +1070,22 @@ fn retained_surface_patch_updates_only_pane_cells_without_recomposing_chrome() {
         rows: vec![crate::protocol::PaneSurfacePatchRow {
             x: 0,
             y: 0,
-            cells: vec![
-                crate::protocol::CellData {
-                    symbol: "N".into(),
-                    fg: 0,
-                    bg: 0,
-                    modifier: 0,
-                    skip: false,
-                    hyperlink: None,
-                };
-                4
-            ],
+            cells: [
+                Color::Reset,
+                Color::Rgb(18, 52, 86),
+                Color::Indexed(42),
+                Color::Blue,
+            ]
+            .into_iter()
+            .map(|background| crate::protocol::CellData {
+                symbol: "N".into(),
+                fg: 0,
+                bg: crate::protocol::color_to_u32(background),
+                modifier: 0,
+                skip: false,
+                hyperlink: None,
+            })
+            .collect(),
         }],
         panes: vec![updated_pane],
         cursor: None,
@@ -1077,6 +1099,26 @@ fn retained_surface_patch_updates_only_pane_cells_without_recomposing_chrome() {
     let pane_index = usize::from(layout.pane_surface.y) * usize::from(patched.width)
         + usize::from(layout.pane_surface.x);
     assert_eq!(patched.cells[pane_index].symbol, "N");
+    assert_eq!(
+        patched.cells[pane_index..pane_index + 4]
+            .iter()
+            .map(|cell| cell.bg)
+            .collect::<Vec<_>>(),
+        [
+            Color::Rgb(30, 30, 46),
+            Color::Rgb(18, 52, 86),
+            Color::Indexed(42),
+            Color::Blue
+        ]
+        .map(crate::protocol::color_to_u32),
+        "streaming cells must have their pane background on the first patch"
+    );
+    assert_eq!(
+        state.pane_surface.as_ref().unwrap().frame.cells[0].bg,
+        0,
+        "the retained server frame must keep its default color semantics"
+    );
+    assert_eq!(patched, state.compose(100, 30).expect("full repaint"));
     assert_eq!(
         patched.cells[0], composed.cells[0],
         "sidebar chrome changed"
@@ -1129,6 +1171,7 @@ fn retained_surface_patch_recomposes_client_owned_mode_and_diagnostic_rows() {
 #[test]
 fn retained_surface_patch_updates_scrollbar_cells_and_pane_hit_metadata() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.config.palette.pane_default_bg = Color::Rgb(30, 30, 46);
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
@@ -1183,6 +1226,10 @@ fn retained_surface_patch_updates_scrollbar_cells_and_pane_hit_metadata() {
     let scrollbar_index = usize::from(layout.pane_surface.y) * usize::from(patched.width)
         + usize::from(layout.pane_surface.x + 4);
     assert_eq!(patched.cells[scrollbar_index].symbol, "▐");
+    assert_eq!(
+        patched.cells[scrollbar_index].bg,
+        crate::protocol::color_to_u32(Color::Rgb(30, 30, 46))
+    );
     let hit = state
         .hits
         .panes

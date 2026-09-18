@@ -102,17 +102,16 @@ pub(crate) fn render_tab_bar(
         let rect = Rect::new(x, area.y, width, 1);
         let style = if tab.focused {
             let base = Style::default()
-                .fg(panel_contrast_fg(palette))
-                .bg(palette.accent);
+                .fg(palette.accent)
+                .bg(palette.panel_bg)
+                .add_modifier(Modifier::UNDERLINED);
             if tab.custom_label {
                 base.add_modifier(Modifier::BOLD)
             } else {
                 base
             }
-        } else if tab.custom_label {
-            Style::default().fg(palette.overlay1).bg(palette.surface0)
         } else {
-            Style::default().fg(palette.overlay0).bg(palette.surface0)
+            Style::default().fg(palette.overlay0).bg(palette.panel_bg)
         };
         let padding = width.saturating_sub(display_width(&name));
         let left = padding / 2;
@@ -381,7 +380,81 @@ fn tab_label(tab: &ClientShellTab) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::max_tab_scroll;
+    use super::*;
+
+    fn render_line_tabs(focused: usize) -> (Buffer, ShellHitMap) {
+        let mut snapshot = crate::client::shell::tests::snapshot();
+        snapshot.tabs = ["Alpha", "Beta", "Gamma"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, label)| ClientShellTab {
+                tab_id: format!("tab_{}", index + 1),
+                workspace_id: "ws_1".into(),
+                number: index + 1,
+                label: label.into(),
+                custom_label: index < 2,
+                zoomed: false,
+                focused: index == focused,
+                agent_status: crate::api::schema::AgentStatus::Idle,
+            })
+            .collect();
+        snapshot.focused_tab_id = Some(format!("tab_{}", focused + 1));
+        snapshot.workspaces[0].active_tab_id = format!("tab_{}", focused + 1);
+
+        let mut config = ClientShellConfig::from_config(&Config::default());
+        config.mouse_capture = false;
+        config.palette.accent = Color::Rgb(10, 20, 30);
+        config.palette.overlay0 = Color::Rgb(70, 80, 90);
+        config.palette.panel_bg = Color::Rgb(40, 50, 60);
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 36, 1));
+        let mut hits = ShellHitMap::default();
+        render_tab_bar(
+            &mut buffer,
+            Rect::new(0, 0, 36, 1),
+            &snapshot,
+            &config,
+            &mut 0,
+            &mut false,
+            None,
+            &mut hits,
+        );
+        (buffer, hits)
+    }
+
+    #[test]
+    fn focused_tab_uses_accent_underline_without_changing_the_tab_bar_shape() {
+        for focused in [0, 1] {
+            let (buffer, hits) = render_line_tabs(focused);
+            assert_eq!(hits.tabs.len(), 3);
+            for (index, (rect, _)) in hits.tabs.iter().enumerate() {
+                let expected_fg = if index == focused {
+                    Color::Rgb(10, 20, 30)
+                } else {
+                    Color::Rgb(70, 80, 90)
+                };
+                for x in rect.x..rect.right() {
+                    let cell = &buffer[(x, rect.y)];
+                    assert_eq!(cell.fg, expected_fg, "tab {index} cell {x}");
+                    assert_eq!(cell.bg, Color::Rgb(40, 50, 60), "tab {index} cell {x}");
+                    assert_eq!(
+                        cell.modifier.contains(Modifier::UNDERLINED),
+                        index == focused,
+                        "tab {index} cell {x}"
+                    );
+                }
+            }
+            let focused_rect = hits.tabs[focused].0;
+            assert!(buffer[(focused_rect.x + 2, 0)]
+                .modifier
+                .contains(Modifier::BOLD));
+            let trailing = hits.tabs.last().expect("last tab").0.right();
+            assert_eq!(buffer[(trailing, 0)].symbol(), " ");
+            assert_eq!(buffer[(trailing, 0)].bg, Color::Rgb(40, 50, 60));
+            assert!(!buffer[(trailing, 0)]
+                .modifier
+                .contains(Modifier::UNDERLINED));
+        }
+    }
 
     #[test]
     fn trailing_scroll_limit_accounts_for_full_widths_and_separators() {

@@ -135,6 +135,8 @@ impl ClientShellConfig {
             theme_name: theme_runtime.manual_name.clone(),
             theme_runtime,
             palette: crate::app::client_palette_from_config(config),
+            pixel_pane_borders: config.kitty_graphics_enabled()
+                && std::env::var("TERM_PROGRAM").is_ok_and(|program| program == "ghostty"),
             keybinds: config
                 .live_keybinds_with_diagnostics()
                 .map(|(keybinds, _diagnostics)| keybinds)
@@ -389,7 +391,10 @@ impl ClientShellConfig {
             sidebar_width.clamp(min, max)
         }
         .min(cols.saturating_sub(1));
-        let main = Rect::new(sidebar_width, 0, cols.saturating_sub(sidebar_width), rows);
+        let gutter = u16::from(sidebar_width > 0 && self.palette.pane_default_bg != Color::Reset)
+            .min(cols.saturating_sub(sidebar_width + 1));
+        let main_x = sidebar_width + gutter;
+        let main = Rect::new(main_x, 0, cols.saturating_sub(main_x), rows);
         let show_tab_bar = rows > 1 && !(self.hide_tab_bar_when_single_tab && tab_count == 1);
         let tab_height = u16::from(show_tab_bar);
         let (tab_bar, pane_surface) = match self.tab_bar_position {
