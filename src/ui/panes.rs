@@ -685,12 +685,14 @@ fn render_pane_border_titles(
         if start_x >= end_x {
             continue;
         }
-        let color = if info.is_focused {
+        let background = if info.is_focused {
             app.palette.accent
         } else {
             app.palette.overlay0
         };
-        let mut style = Style::default().fg(color);
+        let mut style = Style::default()
+            .fg(contrast_fg_for_bg(background, &app.palette))
+            .bg(background);
         if info.is_focused {
             style = style.add_modifier(Modifier::BOLD);
         }
@@ -756,7 +758,7 @@ fn automatic_selection_style(
     host_theme: crate::terminal_theme::TerminalTheme,
 ) -> Style {
     let bg = automatic_selection_bg(p, host_theme);
-    Style::reset().fg(selection_fg_for_bg(bg, p)).bg(bg)
+    Style::reset().fg(contrast_fg_for_bg(bg, p)).bg(bg)
 }
 
 fn automatic_selection_bg(p: &Palette, host_theme: crate::terminal_theme::TerminalTheme) -> Color {
@@ -789,7 +791,7 @@ fn selection_palette_background(p: &Palette) -> Color {
     }
 }
 
-fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
+fn contrast_fg_for_bg(bg: Color, p: &Palette) -> Color {
     if let Color::Rgb(r, g, b) = bg {
         let luminance = relative_luminance((r, g, b));
         let black_contrast = (luminance + 0.05) / 0.05;
@@ -950,6 +952,7 @@ mod tests {
     #[test]
     fn pane_border_renderer_places_adjacent_cjk_by_display_width() {
         let mut app = AppState::test_new();
+        app.pane_gaps = true;
         app.view.terminal_area = Rect::new(0, 0, 12, 3);
         let ws = Workspace::test_new("test");
         let pane_id = ws.tabs[0].root_pane;
@@ -974,9 +977,17 @@ mod tests {
             .unwrap();
 
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(4, 0)].symbol(), "模");
-        assert_eq!(buffer[(5, 0)].symbol(), " ");
-        assert_eq!(buffer[(6, 0)].symbol(), "块");
+        assert_eq!(
+            (0..12).map(|x| buffer[(x, 0)].symbol()).collect::<Vec<_>>(),
+            ["🭽", " ", "1", " ", "模", " ", "块", " ", "…", " ", "▔", "🭾"],
+        );
+        for x in [1, 2, 3, 4, 6, 8, 9] {
+            assert_eq!(buffer[(x, 0)].style().bg, Some(app.palette.overlay0));
+            assert_eq!(buffer[(x, 0)].style().fg, Some(Color::Rgb(255, 255, 255)));
+        }
+        for x in [5, 7] {
+            assert_eq!(buffer[(x, 0)].style().bg, Some(Color::Reset));
+        }
     }
 
     #[test]

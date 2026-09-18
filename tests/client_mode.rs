@@ -1352,6 +1352,7 @@ fn verify_pane_background_ownership(show_sidebar: bool) {
         } else {
             &[663, 663, 680, 680, 680, 680]
         },
+        &[],
     );
 
     let streaming_start = output.lock().unwrap().bytes.len();
@@ -1419,6 +1420,132 @@ fn verify_pane_background_ownership(show_sidebar: bool) {
 }
 
 #[test]
+fn named_stacked_panes_emit_filled_title_styles_and_pixel_uploads() {
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let cleanup = TestBaseCleanup(base.clone());
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let client_socket = runtime_dir.join("herdr-client.sock");
+    let config = PANE_BACKGROUND_CONFIG;
+    let server = spawn_server_with_config(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &client_socket,
+        config,
+    );
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    wait_for_socket(&client_socket, Duration::from_secs(10));
+    let created = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "named-pane-workspace",
+            "method": "workspace.create",
+            "params": {"cwd": &base, "focus": true, "label": "named-pane-proof"},
+        })
+        .to_string(),
+    );
+    let top_pane = created["result"]["root_pane"]["pane_id"]
+        .as_str()
+        .expect("top pane id");
+    let split = send_json_request(
+        &api_socket,
+        &serde_json::json!({
+            "id": "named-pane-split",
+            "method": "pane.split",
+            "params": {
+                "target_pane_id": top_pane,
+                "direction": "down",
+                "ratio": 0.5,
+                "focus": true,
+            },
+        })
+        .to_string(),
+    );
+    let bottom_pane = split["result"]["pane"]["pane_id"]
+        .as_str()
+        .expect("bottom pane id");
+    for (pane_id, label) in [(top_pane, "模块🭽界"), (bottom_pane, "notes")] {
+        let response = send_json_request(
+            &api_socket,
+            &serde_json::json!({
+                "id": format!("rename-{label}"),
+                "method": "pane.rename",
+                "params": {"pane_id": pane_id, "label": label},
+            })
+            .to_string(),
+        );
+        assert!(response.get("result").is_some(), "{response}");
+    }
+    send_pane_shell_command(&api_socket, top_pane, "printf 'TOP_NAMED_READY\\n'");
+    send_pane_shell_command(&api_socket, bottom_pane, "printf 'BOTTOM_NAMED_READY\\n'");
+
+    let (client, output) = attach_pixel_client(&config_home, &runtime_dir, &api_socket);
+    assert!(wait_until(
+        Duration::from_secs(8),
+        Duration::from_millis(20),
+        || {
+            let bytes = output.lock().unwrap().bytes.clone();
+            let screen = terminal_screen::text(completed_client_frame(&bytes), 80, 24);
+            ["模块🭽界", "notes", "TOP_NAMED_READY", "BOTTOM_NAMED_READY"]
+                .iter()
+                .all(|value| screen.contains(value))
+        }
+    ));
+    let bytes = completed_client_frame(&output.lock().unwrap().bytes).to_vec();
+    let screen = terminal_screen::text(&bytes, 80, 24);
+    let backgrounds = terminal_screen::explicit_backgrounds(&bytes, 80, 24);
+    let foregrounds = terminal_screen::explicit_foregrounds(&bytes, 80, 24);
+    let top_line = screen.lines().next().unwrap();
+    let bottom_line = screen.lines().nth(12).unwrap();
+    assert_eq!(top_line, "  模块🭽界");
+    assert_eq!(bottom_line, "  notes");
+    for (row, columns, background, foreground) in [
+        (0, 1..10, [91, 89, 92], [255, 255, 255]),
+        (12, 1..8, [169, 220, 118], [0, 0, 0]),
+    ] {
+        for x in columns {
+            assert_eq!(backgrounds[row * 80 + x], Some(background));
+            assert_eq!(foregrounds[row * 80 + x], Some(foreground));
+        }
+    }
+    let green = if cfg!(target_os = "macos") {
+        [179, 219, 130]
+    } else {
+        [169, 220, 118]
+    };
+    assert_pixel_border_images(
+        &bytes,
+        &[1360; 4],
+        &[
+            Some(PixelTitleSpec {
+                range: 17..170,
+                stroke: [91, 89, 92],
+            }),
+            None,
+            Some(PixelTitleSpec {
+                range: 17..136,
+                stroke: green,
+            }),
+            None,
+        ],
+    );
+    if let Some(root) = std::env::var_os("HERDR_VISUAL_EVIDENCE_DIR") {
+        let evidence = PathBuf::from(root).join("named-panes");
+        fs::create_dir_all(&evidence).unwrap();
+        fs::write(evidence.join("raw.ansi"), &bytes).unwrap();
+        fs::write(evidence.join("screen.txt"), &screen).unwrap();
+        fs::write(evidence.join("config.toml"), config).unwrap();
+    }
+
+    drop(client);
+    drop(server);
+    drop(cleanup);
+}
+
+#[test]
 fn single_pane_keeps_rounded_focused_frame() {
     let _lock = test_lock();
     let base = unique_test_dir();
@@ -1465,7 +1592,7 @@ fn single_pane_keeps_rounded_focused_frame() {
     );
     let bytes = completed_client_frame(&output.lock().unwrap().bytes).to_vec();
     let screen = terminal_screen::text(&bytes, 80, 24);
-    assert_pixel_border_images(&bytes, &[1360, 1360]);
+    assert_pixel_border_images(&bytes, &[1360, 1360], &[]);
     assert_eq!(
         terminal_screen::explicit_backgrounds(&bytes, 80, 24),
         vec![Some([30, 30, 46]); 80 * 24]
@@ -1528,7 +1655,16 @@ fn completed_client_frame(bytes: &[u8]) -> &[u8] {
         .map_or(&[], |index| &bytes[..index + end.len()])
 }
 
-fn assert_pixel_border_images(bytes: &[u8], expected_widths: &[usize]) {
+struct PixelTitleSpec {
+    range: std::ops::Range<usize>,
+    stroke: [u8; 3],
+}
+
+fn assert_pixel_border_images(
+    bytes: &[u8],
+    expected_widths: &[usize],
+    title_specs: &[Option<PixelTitleSpec>],
+) {
     const CORNER: [&[u8; 12]; 12] = [
         b".......+++++",
         b".....++#####",
@@ -1553,7 +1689,8 @@ fn assert_pixel_border_images(bytes: &[u8], expected_widths: &[usize]) {
     let mut widths = Vec::new();
     let mut focused = 0;
     let mut top_edges = 0;
-    for packet in packets.captures_iter(bytes) {
+    for (image_index, packet) in packets.captures_iter(bytes).enumerate() {
+        let title_spec = title_specs.get(image_index).and_then(Option::as_ref);
         let png = base64::engine::general_purpose::STANDARD
             .decode(&packet[2])
             .unwrap();
@@ -1569,7 +1706,7 @@ fn assert_pixel_border_images(bytes: &[u8], expected_widths: &[usize]) {
         let middle = |y: usize| &pixels[(y * width + width / 2) * 3..][..3];
         let top = middle(0) == outside;
         top_edges += usize::from(top);
-        let stroke = middle(if top { 8 } else { 25 }).to_vec();
+        let stroke = middle(if top { 17 } else { 34 }).to_vec();
         assert!(
             stroke == [91, 89, 92] || stroke == green,
             "unexpected stroke {stroke:?}"
@@ -1579,11 +1716,15 @@ fn assert_pixel_border_images(bytes: &[u8], expected_widths: &[usize]) {
             for x in 0..width {
                 let inset = x.min(width - 1 - x);
                 let depth = if top {
-                    y.saturating_sub(8)
+                    y.saturating_sub(17)
                 } else {
-                    26_usize.saturating_sub(y)
+                    35_usize.saturating_sub(y)
                 };
-                let shape = if (top && y < 8) || (!top && y >= 27) {
+                let shape = if title_spec
+                    .is_some_and(|title| title.range.contains(&x) && (4..32).contains(&y))
+                {
+                    b'#'
+                } else if top && y < 17 {
                     b'.'
                 } else if inset < 12 && depth < 12 {
                     CORNER[depth][inset]
@@ -1617,6 +1758,23 @@ fn assert_pixel_border_images(bytes: &[u8], expected_widths: &[usize]) {
                 assert_eq!(actual, expected, "border pixel {x},{y}");
             }
         }
+        if let Some(title) = title_spec {
+            assert!(top, "title chip must be in a top strip");
+            assert_eq!(stroke, title.stroke);
+            for x in title.range.clone() {
+                assert_eq!(&pixels[(4 * width + x) * 3..][..3], title.stroke);
+                assert_eq!(&pixels[(31 * width + x) * 3..][..3], title.stroke);
+            }
+            assert_eq!(&pixels[(4 * width + title.range.end) * 3..][..3], outside);
+            assert_eq!(
+                &pixels[(17 * width + title.range.end) * 3..][..3],
+                title.stroke
+            );
+            assert_eq!(&pixels[(31 * width + title.range.end) * 3..][..3], inside);
+        }
+    }
+    if !title_specs.is_empty() {
+        assert_eq!(title_specs.len(), widths.len());
     }
     widths.sort_unstable();
     assert_eq!(widths, expected_widths);
@@ -1626,7 +1784,7 @@ fn assert_pixel_border_images(bytes: &[u8], expected_widths: &[usize]) {
         "one top and bottom edge per pane"
     );
     assert_eq!(focused, 2, "both focused horizontal edges stay green");
-    eprintln!("pixel borders: {} PNGs, 12-pixel rounded corners, 2-pixel strokes, 8 + 9 = 17-pixel vertical gutter", widths.len());
+    eprintln!("pixel borders: {} PNGs, 12-pixel rounded corners, 2-pixel strokes, 17 + 0 = 17-pixel vertical gutter", widths.len());
 }
 
 fn read_output(output: &SharedOutput) -> String {

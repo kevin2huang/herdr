@@ -28,7 +28,9 @@ The helper first composes a retained pane surface with deliberate bottom and rig
 
 A second PTY run opens a 20-column sidebar. Its right-edge separator and one blank column must match the split gutter. The `sidebar/` evidence reports 1,134 body cells, 258 border cells, and 24 exterior cells within the pane canvas.
 
-Both PTYs advertise exact 17 by 36 pixel cells and Ghostty graphics support. The test decodes all six uploaded PNG strips and checks every pixel: two-pixel strokes, Mocha interiors, and eight exterior pixels above plus nine below. Together those margins make a 17-pixel stacked gutter. It also rejects repeated image uploads during text updates.
+Both PTYs advertise exact 17 by 36 pixel cells and Ghostty graphics support. The test decodes all six uploaded PNG strips and checks every pixel. Top strips place 17 exterior pixels above the two-pixel stroke. Bottom strips place no exterior pixels below the stroke. The adjacent margins still make a 17-pixel stacked gutter. The test also rejects repeated image uploads during text updates.
+
+A separate named-pane PTY uses a CJK label that contains a border glyph and a second ASCII label. It checks the literal text cells and decodes all four border strips. Each title chip fills its padded cell range from pixel row 4 through row 31, uses the rendered border color, and leaves the neighboring exterior and interior pixels unchanged. The text renderer still owns truncation, glyph placement, contrast, and focus styling. The pixel layer only adds a vertically centered fill behind that text. Replay `named-panes/raw.ansi` in the native terminal and inspect the chip beside the text references before accepting a screenshot.
 
 The test enables scrollbars and exercises both visible and hidden lanes. It then sends three text updates and checks every completed output frame. `streaming.ansi` records those updates. `visual.log` must report at least three streaming frames without a background mismatch.
 

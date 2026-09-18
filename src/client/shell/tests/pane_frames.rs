@@ -18,10 +18,22 @@ fn fixture(count: usize) -> (FrameData, Vec<PaneSurfacePane>, Palette) {
         } else {
             Rect::new((index % 5) as u16 * 24, (index / 5) as u16 * 13, 23, 13)
         };
+        let stroke = if index == 0 {
+            palette.accent
+        } else {
+            palette.overlay0
+        };
+        let title_fg = if index == 0 {
+            Color::Rgb(0, 0, 0)
+        } else {
+            Color::Rgb(255, 255, 255)
+        };
         let block = Block::default()
             .borders(Borders::ALL)
             .border_set(crate::ui::PANE_BORDER_SET)
-            .title("label");
+            .border_style(Style::default().fg(stroke))
+            .title_style(Style::default().fg(title_fg).bg(stroke))
+            .title(" label ");
         let inner = block.inner(rect);
         block.render(rect, &mut buffer);
         panes.push(PaneSurfacePane {
@@ -242,11 +254,11 @@ fn pixel_frames_preserve_labels_and_reuse_images_during_redraws() {
     assert!(bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
     assert_eq!(frame.cells[0].symbol, " ");
     assert_eq!(
-        frame.cells[1..6]
+        frame.cells[1..8]
             .iter()
             .map(|cell| cell.symbol.as_str())
             .collect::<String>(),
-        "label"
+        " label "
     );
     assert!(frames.take_pending_cleanup().is_empty());
     let bytes = frames.compose(
@@ -293,9 +305,244 @@ fn overlays_keep_their_text_and_occlude_border_images() {
     assert!(frames.cleanup().is_empty());
 }
 
+fn border_pixels(row: &BorderRow) -> (usize, Vec<u8>) {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(row.png().unwrap()))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    (info.width as usize, pixels)
+}
+
+#[test]
+fn title_chip_fills_the_padded_span_without_covering_adjacent_border() {
+    let (green, gray, inside, outside) = if cfg!(target_os = "macos") {
+        ([179, 219, 130], [91, 89, 92], [30, 30, 45], [33, 31, 34])
+    } else {
+        ([169, 220, 118], [91, 89, 92], [30, 30, 46], [34, 31, 34])
+    };
+    for (stroke, expected_stroke) in [([169, 220, 118], green), ([91, 89, 92], gray)] {
+        let row = BorderRow {
+            rect: Rect::new(0, 0, 12, 1),
+            edge: Edge::Top,
+            cell_width: 17,
+            cell_height: 36,
+            inside: [30, 30, 46],
+            outside: [34, 31, 34],
+            stroke,
+            title_span: Some((1, 8)),
+        };
+        let (width, pixels) = border_pixels(&row);
+        let pixel = |x: usize, y: usize| &pixels[(y * width + x) * 3..][..3];
+
+        for x in 17..8 * 17 {
+            assert_eq!(pixel(x, 4), expected_stroke);
+            assert_eq!(pixel(x, 31), expected_stroke);
+        }
+        assert_eq!(pixel(8 * 17, 4), outside);
+        assert_eq!(pixel(8 * 17, 17), expected_stroke);
+        assert_eq!(pixel(8 * 17, 31), inside);
+    }
+}
+
+#[test]
+fn rendered_wide_title_drives_chip_range_and_preserves_title_glyphs() {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 12, 3));
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(crate::ui::PANE_BORDER_SET)
+        .border_style(Style::default().fg(Color::Rgb(169, 220, 118)))
+        .title_style(
+            Style::default()
+                .fg(Color::Rgb(0, 0, 0))
+                .bg(Color::Rgb(169, 220, 118)),
+        )
+        .title(" 模块🭽界 ");
+    let inner = block.inner(buffer.area);
+    block.render(buffer.area, &mut buffer);
+    let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
+    let panes = [PaneSurfacePane {
+        pane_id: "wide-title".into(),
+        content_revision: 0,
+        rect: buffer.area.into(),
+        inner_rect: inner.into(),
+        scrollbar_rect: None,
+        scroll: None,
+        focused: true,
+        mouse_reporting: false,
+        sgr_pixel_mouse: false,
+        alternate_screen_active: false,
+        pixel_width: 0,
+        pixel_height: 0,
+    }];
+    let mut palette = fixture(0).2;
+    palette.accent = Color::Rgb(255, 0, 255);
+    let mut frames = PaneFrames::default();
+    frames.set_scope("styled-title");
+
+    frames.compose(
+        &mut frame,
+        layout(&panes, None),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+
+    let ChromeRow::Border(top) = &frames.rows[0] else {
+        panic!("first row should be the top border");
+    };
+    assert_eq!(top.stroke, [169, 220, 118]);
+    assert_eq!(top.title_span, Some((1, 10)));
+    assert_eq!(
+        frame.cells[1..11]
+            .iter()
+            .map(|cell| cell.symbol.as_str())
+            .collect::<Vec<_>>(),
+        [" ", "模", " ", "块", " ", "🭽", "界", " ", " ", " "],
+    );
+}
+
+#[test]
+fn border_colored_pane_background_does_not_create_a_title_span() {
+    let (mut frame, panes, mut palette) = fixture(1);
+    palette.pane_default_bg = palette.accent;
+    let stroke = crate::protocol::color_to_u32(palette.accent);
+    for cell in &mut frame.cells {
+        cell.bg = stroke;
+    }
+    for cell in &mut frame.cells[1..8] {
+        cell.symbol = "▔".into();
+        cell.fg = stroke;
+    }
+    let mut frames = PaneFrames::default();
+    frames.set_scope("no-false-title");
+
+    frames.compose(
+        &mut frame,
+        layout(&panes, None),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+
+    let ChromeRow::Border(top) = &frames.rows[0] else {
+        panic!("first row should be the top border");
+    };
+    assert_eq!(top.title_span, None);
+}
+
+#[test]
+fn focus_rename_and_title_removal_refresh_cached_border_images() {
+    let (base_frame, mut panes, palette) = fixture(1);
+    let mut frames = PaneFrames::default();
+    frames.set_scope("title-cache");
+    let compose = |frames: &mut PaneFrames, frame: &mut FrameData, panes: &[PaneSurfacePane]| {
+        frames.compose(
+            frame,
+            layout(panes, None),
+            CELL,
+            &palette,
+            &surface::Occlusion::default(),
+        )
+    };
+    let mut frame = base_frame.clone();
+    assert!(compose(&mut frames, &mut frame, &panes)
+        .windows(5)
+        .any(|bytes| bytes == b"a=t,t"));
+    let mut frame = base_frame.clone();
+    assert!(!compose(&mut frames, &mut frame, &panes)
+        .windows(5)
+        .any(|bytes| bytes == b"a=t,t"));
+
+    let accent = crate::protocol::color_to_u32(palette.accent);
+    let overlay = crate::protocol::color_to_u32(palette.overlay0);
+    let pane_bg = crate::protocol::color_to_u32(palette.pane_default_bg);
+    let white = crate::protocol::color_to_u32(Color::Rgb(255, 255, 255));
+    let mut focused_frame = base_frame.clone();
+    for cell in &mut focused_frame.cells {
+        if cell.fg == accent {
+            cell.fg = overlay;
+        }
+        if cell.bg == accent {
+            cell.bg = overlay;
+            cell.fg = white;
+        }
+    }
+    panes[0].focused = false;
+    let mut frame = focused_frame.clone();
+    assert!(compose(&mut frames, &mut frame, &panes)
+        .windows(5)
+        .any(|bytes| bytes == b"a=t,t"));
+
+    let mut renamed_frame = focused_frame.clone();
+    for cell in &mut renamed_frame.cells[6..8] {
+        cell.symbol = "▔".into();
+        cell.fg = overlay;
+        cell.bg = pane_bg;
+    }
+    let mut frame = renamed_frame.clone();
+    assert!(compose(&mut frames, &mut frame, &panes)
+        .windows(5)
+        .any(|bytes| bytes == b"a=t,t"));
+
+    for cell in &mut renamed_frame.cells[1..6] {
+        cell.symbol = "▔".into();
+        cell.fg = overlay;
+        cell.bg = pane_bg;
+    }
+    assert!(compose(&mut frames, &mut renamed_frame, &panes)
+        .windows(5)
+        .any(|bytes| bytes == b"a=t,t"));
+}
+
+#[test]
+fn tall_narrow_border_geometry_stays_bounded() {
+    let (stroke, outside) = if cfg!(target_os = "macos") {
+        ([179, 219, 130], [33, 31, 34])
+    } else {
+        ([169, 220, 118], [34, 31, 34])
+    };
+    for (cell_width, cell_height, top_line, bottom_line) in [(2, 20, 2, 19), (17, 12, 7, 0)] {
+        let mut exterior_rows = [0; 2];
+        for (edge_index, edge) in [Edge::Top, Edge::Bottom].into_iter().enumerate() {
+            let row = BorderRow {
+                rect: Rect::new(0, 0, 24, 1),
+                edge,
+                cell_width,
+                cell_height,
+                inside: [30, 30, 46],
+                outside: [34, 31, 34],
+                stroke: [169, 220, 118],
+                title_span: None,
+            };
+            let (width, pixels) = border_pixels(&row);
+            let pixel = |x: usize, y: usize| &pixels[(y * width + x) * 3..][..3];
+            let x = width / 2;
+            let line = if edge == Edge::Top {
+                top_line
+            } else {
+                bottom_line
+            };
+            assert_eq!(pixel(x, line), stroke);
+            if edge == Edge::Top && top_line > 0 {
+                assert_eq!(pixel(x, 0), outside);
+            }
+            if edge == Edge::Bottom && bottom_line + 1 < cell_height as usize {
+                assert_eq!(pixel(x, cell_height as usize - 1), outside);
+            }
+            exterior_rows[edge_index] = (0..cell_height as usize)
+                .filter(|y| pixel(x, *y) == outside)
+                .count();
+        }
+        assert_eq!(exterior_rows.iter().sum::<usize>(), cell_width as usize);
+        assert_eq!(exterior_rows, [top_line, cell_width as usize - top_line]);
+    }
+}
+
 #[test]
 fn rounded_border_strips_cut_out_corners_and_join_straight_edges() {
-    for (edge, outer_y, side_y, blended_y) in [(Edge::Top, 8, 20, 16), (Edge::Bottom, 26, 14, 18)] {
+    for (edge, outer_y, side_y, blended_y) in [(Edge::Top, 17, 29, 25), (Edge::Bottom, 35, 23, 27)]
+    {
         let row = BorderRow {
             rect: Rect::new(0, 0, 24, 1),
             edge,
@@ -304,6 +551,7 @@ fn rounded_border_strips_cut_out_corners_and_join_straight_edges() {
             inside: [0; 3],
             outside: [32; 3],
             stroke: [255; 3],
+            title_span: None,
         };
         let mut reader = png::Decoder::new(std::io::Cursor::new(row.png().unwrap()))
             .read_info()

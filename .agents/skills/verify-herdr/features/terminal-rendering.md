@@ -46,9 +46,11 @@ Outer-edge blocks remove the inside strip, but one blank column and one blank ro
 
 ## Verify pixel strips
 
-For the Ghostty pixel-frame path, bordered stacked panes reserve no blank row. Each top or bottom border row carries a cached PNG strip behind its text. At 17 by 36 pixels per cell, top strips contain eight exterior pixels followed by a two-pixel stroke; bottom strips end with a two-pixel stroke followed by nine exterior pixels. Adjacent margins sum to 17 pixels, matching the blank column between side-by-side panes. Labels stay in the text layer.
+For the Ghostty pixel-frame path, bordered stacked panes reserve no blank row. Each top or bottom border row carries a cached PNG strip behind its text. At 17 by 36 pixels per cell, top strips contain 17 exterior pixels followed by a two-pixel stroke. Bottom strips place the two-pixel stroke at rows 34 and 35 with no exterior pixels below it. Adjacent margins still sum to 17 pixels, matching the blank column between side-by-side panes.
 
-The PTY recipe sets the host pixel dimensions explicitly. It decodes all six PNGs, checks their complete pixel arrays, and confirms that streaming text reuses uploads. Readiness must use the last completed synchronized-output frame (`CSI ? 2026 l`): a pane marker can arrive while the border or graphics bytes are still being written.
+Named panes keep their labels in the text layer, so the existing layout still controls Unicode width, truncation, contrast, focus styling, and glyph positions. The PNG adds a fill behind the padded title span from row 4 through row 31. This centers the chip vertically while preserving the exterior pixels above it and the pane interior below it.
+
+The PTY recipe sets the host pixel dimensions explicitly. It decodes all six background-proof PNGs and all four named-pane PNGs, checks their complete pixel arrays, and confirms that streaming text reuses uploads. The named run checks a real CJK label with a border glyph at literal cell positions. Replay `named-panes/raw.ansi` in Ghostty for the native proof, then compare the chip fill and text against the PTY's decoded pixels. Readiness must use the last completed synchronized-output frame (`CSI ? 2026 l`): a pane marker can arrive while the border or graphics bytes are still being written.
 
 Capture the actual host render as well. Check two-pixel strokes, 17-pixel gutters in both directions, joined corners, unchanged application backgrounds, and no shade change where an image meets a text cell. Check labels, occlusion, focus changes, and workspace cleanup. Profile cached redraws with one and fifteen panes; PNG compression and placement encoding must not repeat on every text update.
 

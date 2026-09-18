@@ -26,6 +26,7 @@ struct BorderRow {
     inside: [u8; 3],
     outside: [u8; 3],
     stroke: [u8; 3],
+    title_span: Option<(u16, u16)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -61,15 +62,26 @@ impl BorderRow {
             return Err(std::io::Error::other("pane border image exceeds 4 MiB"));
         };
         let thickness = (self.cell_width / 8).max(1);
-        let line = match self.edge {
-            Edge::Top => self.cell_width / 2,
-            Edge::Bottom => height.saturating_sub(self.cell_width.div_ceil(2) + thickness),
+        let available = height - thickness;
+        let top_margin = ((height - thickness) / 2).clamp(
+            self.cell_width.saturating_sub(available),
+            self.cell_width.min(available),
+        );
+        let bottom_margin = self.cell_width - top_margin;
+        let (line, exterior_margin) = match self.edge {
+            Edge::Top => (top_margin, top_margin),
+            Edge::Bottom => (
+                height.saturating_sub(bottom_margin + thickness),
+                bottom_margin,
+            ),
         };
         let radius = f64::from(
             CORNER_RADIUS_PX
                 .min(width / 2)
-                .min(height.saturating_sub(self.cell_width.div_ceil(2))),
+                .min(height.saturating_sub(exterior_margin)),
         );
+        let title_inset = (self.cell_width / 4).max(1).min(height / 2);
+        let title_rows = title_inset..height.saturating_sub(title_inset);
         let inside = crate::platform::ghostty_image_color(self.inside);
         let exterior = crate::platform::ghostty_image_color(self.outside);
         let stroke = crate::platform::ghostty_image_color(self.stroke);
@@ -85,7 +97,12 @@ impl BorderRow {
             };
             for x in 0..width {
                 let inset = f64::from(x.min(width - 1 - x)) + 0.5;
-                let color = if outside {
+                let title_column = self.title_span.is_some_and(|(start, end)| {
+                    x >= u32::from(start) * self.cell_width && x < u32::from(end) * self.cell_width
+                });
+                let color = if title_column && title_rows.contains(&y) {
+                    stroke
+                } else if outside {
                     exterior
                 } else if inset < radius && depth < radius {
                     let distance = radius - (radius - inset).hypot(radius - depth);
@@ -245,25 +262,37 @@ impl PaneFrames {
                 {
                     continue;
                 }
-                let Color::Rgb(r, g, b) = (if pane.focused {
-                    palette.accent
-                } else {
-                    palette.overlay0
-                }) else {
-                    continue;
-                };
                 for (edge, y, corner) in [
                     (Edge::Top, rect.y, "🭽"),
                     (Edge::Bottom, rect.bottom() - 1, "🭼"),
                 ] {
                     let row = Rect::new(rect.x, y, rect.width, 1);
-                    if frame.cells[usize::from(y) * usize::from(frame.width) + usize::from(rect.x)]
-                        .symbol
-                        != corner
-                        || occlusion.covers_rect(row)
-                    {
+                    let corner_index =
+                        usize::from(y) * usize::from(frame.width) + usize::from(rect.x);
+                    let corner_cell = &frame.cells[corner_index];
+                    if corner_cell.symbol != corner || occlusion.covers_rect(row) {
                         continue;
                     }
+                    let Color::Rgb(r, g, b) = crate::protocol::u32_to_color(corner_cell.fg) else {
+                        continue;
+                    };
+                    let title_span = (edge == Edge::Top)
+                        .then(|| {
+                            (1..rect.width.saturating_sub(1))
+                                .filter(|column| {
+                                    let cell = &frame.cells[usize::from(y)
+                                        * usize::from(frame.width)
+                                        + usize::from(rect.x + *column)];
+                                    cell.bg == corner_cell.fg && cell.fg != corner_cell.fg
+                                })
+                                .fold(None, |span, column| {
+                                    Some(match span {
+                                        Some((start, _)) => (start, column + 1),
+                                        None => (column, column + 1),
+                                    })
+                                })
+                        })
+                        .flatten();
                     rows.push(ChromeRow::Border(BorderRow {
                         rect: row,
                         edge,
@@ -272,6 +301,7 @@ impl PaneFrames {
                         inside: [ir, ig, ib],
                         outside: [or, og, ob],
                         stroke: [r, g, b],
+                        title_span,
                     }));
                 }
             }
@@ -347,8 +377,13 @@ impl PaneFrames {
                 let cell = &mut frame.cells
                     [usize::from(rect.y) * usize::from(frame.width) + usize::from(x)];
                 match row {
-                    ChromeRow::Border(_) => {
-                        if matches!(cell.symbol.as_str(), "🭽" | "🭾" | "🭼" | "🭿" | "▔" | "▁")
+                    ChromeRow::Border(border) => {
+                        let column = x - rect.x;
+                        let in_title = border
+                            .title_span
+                            .is_some_and(|(start, end)| (start..end).contains(&column));
+                        if !in_title
+                            && matches!(cell.symbol.as_str(), "🭽" | "🭾" | "🭼" | "🭿" | "▔" | "▁")
                         {
                             cell.symbol = " ".into();
                         }
