@@ -1,4 +1,6 @@
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::io;
 
 use super::*;
 use crate::kitty_graphics::{surface, HostCellSize};
@@ -37,10 +39,39 @@ struct TabUnderline {
     accent: [u8; 3],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(super) struct SidebarIconPlacement {
+    pub(super) icon: crate::ui::SidebarIcon,
+    pub(super) rect: Rect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct IconRow {
+    placement: SidebarIconPlacement,
+    cell_width: u32,
+    cell_height: u32,
+    color: Option<[u8; 3]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+struct IconAssetKey {
+    icon: crate::ui::SidebarIcon,
+    cell_width: u32,
+    cell_height: u32,
+    color: Option<[u8; 3]>,
+}
+
+#[derive(Debug)]
+struct CachedIcon {
+    png: Vec<u8>,
+    last_used: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum ChromeRow {
     Border(BorderRow),
     TabUnderline(TabUnderline),
+    Icon(IconRow),
 }
 
 pub(super) struct ChromeLayout<'a> {
@@ -48,9 +79,34 @@ pub(super) struct ChromeLayout<'a> {
     pub(super) pane_area: Rect,
     pub(super) sidebar: Option<Rect>,
     pub(super) active_tab: Option<Rect>,
+    pub(super) icons: &'a [SidebarIconPlacement],
 }
 
 const CORNER_RADIUS_PX: u32 = 12;
+const MAX_ICON_CACHE_ENTRIES: usize = 32;
+
+pub(super) fn pixel_chrome_available(enabled: bool, cell: HostCellSize) -> bool {
+    enabled
+        && cell.is_known()
+        && cell.height_px > cell.width_px.div_ceil(2) + (cell.width_px / 8).max(1)
+}
+
+pub(super) fn record_token_icons(
+    icons: &[crate::ui::TokenIcon],
+    origin: (u16, u16),
+    right: u16,
+    placements: &mut Vec<SidebarIconPlacement>,
+) {
+    placements.extend(icons.iter().filter_map(|icon| {
+        let column = u16::try_from(icon.column).ok()?;
+        let x = origin.0.checked_add(column)?;
+        let rect = Rect::new(x, origin.1, 2, 1);
+        (rect.right() <= right).then_some(SidebarIconPlacement {
+            icon: icon.icon,
+            rect,
+        })
+    }));
+}
 
 impl BorderRow {
     fn png(&self) -> std::io::Result<Vec<u8>> {
@@ -172,18 +228,136 @@ impl TabUnderline {
     }
 }
 
+impl IconRow {
+    fn asset_key(self) -> IconAssetKey {
+        IconAssetKey {
+            icon: self.placement.icon,
+            cell_width: self.cell_width,
+            cell_height: self.cell_height,
+            color: self.color,
+        }
+    }
+
+    fn png(self) -> io::Result<Vec<u8>> {
+        let width = self
+            .cell_width
+            .checked_mul(2)
+            .filter(|width| *width > 0)
+            .ok_or_else(|| io::Error::other("invalid sidebar icon width"))?;
+        let height = self.cell_height;
+        let len = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4));
+        if len.is_none_or(|len| len > 4 * 1024 * 1024) {
+            return Err(io::Error::other("sidebar icon image exceeds 4 MiB"));
+        }
+        let viewport = (height.saturating_mul(5).saturating_add(4) / 9).min(width);
+        if viewport == 0 {
+            return Err(io::Error::other("invalid sidebar icon viewport"));
+        }
+        let mut options = resvg::usvg::Options::default();
+        if let Some([red, green, blue]) = self.color {
+            options.style_sheet = Some(format!(
+                "svg {{ color: rgb({red}, {green}, {blue}) !important; }}"
+            ));
+        }
+        let svg = match self.placement.icon {
+            crate::ui::SidebarIcon::GitBranch => {
+                include_bytes!("../../../assets/icons/git-branch.svg").as_slice()
+            }
+            crate::ui::SidebarIcon::Pi => include_bytes!("../../../assets/icons/pi.svg").as_slice(),
+            crate::ui::SidebarIcon::Claude => {
+                include_bytes!("../../../assets/icons/claude.svg").as_slice()
+            }
+            crate::ui::SidebarIcon::Codex => {
+                include_bytes!("../../../assets/icons/codex.svg").as_slice()
+            }
+        };
+        let tree = resvg::usvg::Tree::from_data(svg, &options)
+            .map_err(|error| io::Error::other(format!("invalid sidebar SVG: {error}")))?;
+        let tree_size = tree.size();
+        let scale = viewport as f32 / tree_size.width().max(tree_size.height());
+        let rendered_width = tree_size.width() * scale;
+        let rendered_height = tree_size.height() * scale;
+        let x = (width as f32 - rendered_width) / 2.0;
+        let y = (height as f32 - rendered_height) / 2.0;
+        let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+            .ok_or_else(|| io::Error::other("sidebar icon pixmap is too large"))?;
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::from_row(scale, 0.0, 0.0, scale, x, y),
+            &mut pixmap.as_mut(),
+        );
+        for pixel in pixmap.data_mut().chunks_exact_mut(4) {
+            let alpha = pixel[3];
+            if alpha == 0 {
+                pixel[0] = 0;
+                pixel[1] = 0;
+                pixel[2] = 0;
+                continue;
+            }
+            let demultiply = |channel: u8| {
+                ((u32::from(channel) * 255 + u32::from(alpha) / 2) / u32::from(alpha)).min(255)
+                    as u8
+            };
+            let color = crate::platform::ghostty_image_color([
+                demultiply(pixel[0]),
+                demultiply(pixel[1]),
+                demultiply(pixel[2]),
+            ]);
+            pixel[0] = color[0];
+            pixel[1] = color[1];
+            pixel[2] = color[2];
+        }
+        encode_rgba_png(width, height, pixmap.data())
+    }
+}
+
+impl IconAssetKey {
+    fn layer_id(self) -> String {
+        let kind = match self.icon {
+            crate::ui::SidebarIcon::GitBranch => "git-branch",
+            crate::ui::SidebarIcon::Pi => "pi",
+            crate::ui::SidebarIcon::Claude => "claude",
+            crate::ui::SidebarIcon::Codex => "codex",
+        };
+        let color = self
+            .color
+            .map(|[red, green, blue]| format!("-{red:02x}{green:02x}{blue:02x}"))
+            .unwrap_or_default();
+        format!(
+            "sidebar-{kind}-{}x{}{color}",
+            self.cell_width, self.cell_height
+        )
+    }
+}
+
+fn encode_rgba_png(width: u32, height: u32, pixels: &[u8]) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut bytes, width, height);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().map_err(io::Error::other)?;
+        writer.write_image_data(pixels).map_err(io::Error::other)?;
+    }
+    Ok(bytes)
+}
+
 impl ChromeRow {
     fn rect(&self) -> Rect {
         match self {
             Self::Border(row) => row.rect,
             Self::TabUnderline(row) => row.rect,
+            Self::Icon(row) => row.placement.rect,
         }
     }
 
-    fn png(&self) -> std::io::Result<Vec<u8>> {
+    fn png(&self) -> io::Result<Vec<u8>> {
         match self {
             Self::Border(row) => row.png(),
             Self::TabUnderline(row) => row.png(),
+            Self::Icon(row) => row.png(),
         }
     }
 
@@ -191,6 +365,7 @@ impl ChromeRow {
         match self {
             Self::Border(_) => format!("border-{index}"),
             Self::TabUnderline(_) => format!("tab-underline-{index}"),
+            Self::Icon(row) => row.asset_key().layer_id(),
         }
     }
 }
@@ -200,6 +375,10 @@ pub(super) struct PaneFrames {
     rows: Vec<ChromeRow>,
     graphics: surface::ClientState,
     replay: Vec<u8>,
+    icon_cache: HashMap<IconAssetKey, CachedIcon>,
+    icon_cache_clock: u64,
+    #[cfg(test)]
+    icon_rasterizations: usize,
 }
 
 impl PaneFrames {
@@ -232,6 +411,45 @@ impl PaneFrames {
         )
     }
 
+    fn icon_png(&mut self, row: IconRow) -> io::Result<Vec<u8>> {
+        self.icon_cache_clock = self.icon_cache_clock.wrapping_add(1);
+        let last_used = self.icon_cache_clock;
+        let key = row.asset_key();
+        if let Some(cached) = self.icon_cache.get_mut(&key) {
+            cached.last_used = last_used;
+            return Ok(cached.png.clone());
+        }
+        let png = row.png()?;
+        #[cfg(test)]
+        {
+            self.icon_rasterizations += 1;
+        }
+        self.icon_cache.insert(
+            key,
+            CachedIcon {
+                png: png.clone(),
+                last_used,
+            },
+        );
+        Ok(png)
+    }
+
+    fn trim_icon_cache(&mut self, active: &HashSet<IconAssetKey>) {
+        if self.icon_cache.len() <= MAX_ICON_CACHE_ENTRIES {
+            return;
+        }
+        let mut keys = self
+            .icon_cache
+            .iter()
+            .map(|(key, value)| (*key, active.contains(key), value.last_used))
+            .collect::<Vec<_>>();
+        keys.sort_unstable_by_key(|(_, is_active, last_used)| (*is_active, *last_used));
+        let remove = self.icon_cache.len() - MAX_ICON_CACHE_ENTRIES;
+        for (key, _, _) in keys.into_iter().take(remove) {
+            self.icon_cache.remove(&key);
+        }
+    }
+
     pub(super) fn compose(
         &mut self,
         frame: &mut FrameData,
@@ -240,12 +458,10 @@ impl PaneFrames {
         palette: &Palette,
         occlusion: &surface::Occlusion,
     ) -> Vec<u8> {
-        if !cell.is_known()
-            || cell.height_px <= cell.width_px.div_ceil(2) + (cell.width_px / 8).max(1)
-        {
+        if !pixel_chrome_available(true, cell) {
             return self.cleanup();
         }
-        let mut rows = Vec::with_capacity(layout.panes.len() * 2 + 3);
+        let mut rows = Vec::with_capacity(layout.panes.len() * 2 + layout.icons.len() + 3);
         if let Color::Rgb(or, og, ob) = palette.pane_gap_bg {
             let sidebar = layout
                 .sidebar
@@ -337,11 +553,51 @@ impl PaneFrames {
                 }));
             }
         }
+        for placement in layout.icons {
+            if placement.rect.width != 2
+                || placement.rect.height != 1
+                || placement.rect.right() > frame.width
+                || placement.rect.bottom() > frame.height
+                || occlusion.covers_rect(placement.rect)
+            {
+                continue;
+            }
+            let color = if placement.icon == crate::ui::SidebarIcon::GitBranch {
+                let origin = usize::from(placement.rect.y) * usize::from(frame.width)
+                    + usize::from(placement.rect.x);
+                let branch_cell = &frame.cells[origin];
+                if branch_cell.modifier & Modifier::DIM.bits() != 0 {
+                    continue;
+                }
+                let Color::Rgb(red, green, blue) = crate::protocol::u32_to_color(branch_cell.fg)
+                else {
+                    continue;
+                };
+                Some([red, green, blue])
+            } else {
+                None
+            };
+            rows.push(ChromeRow::Icon(IconRow {
+                placement: *placement,
+                cell_width: cell.width_px,
+                cell_height: cell.height_px,
+                color,
+            }));
+        }
         let changed = rows != self.rows;
         if changed {
             let mut scene = SurfaceGraphicsScene::default();
+            let mut scene_assets = HashSet::new();
+            let mut active_icons = HashSet::new();
             for (index, row) in rows.iter().enumerate() {
-                let data = match row.png() {
+                let data = match row {
+                    ChromeRow::Icon(icon) => {
+                        active_icons.insert(icon.asset_key());
+                        self.icon_png(*icon)
+                    }
+                    _ => row.png(),
+                };
+                let data = match data {
                     Ok(data) => data,
                     Err(error) => {
                         tracing::warn!(%error, "could not render pixel chrome");
@@ -361,9 +617,13 @@ impl PaneFrames {
                     data_len: data.len() as u64,
                     data_fingerprint: hash.finish(),
                 };
+                let logical_placement_id = match row {
+                    ChromeRow::Icon(_) => u32::from(row.rect().y) << 16 | u32::from(row.rect().x),
+                    _ => 1,
+                };
                 scene.placements.push(SurfaceGraphicsPlacement {
                     asset: key.clone(),
-                    logical_placement_id: 1,
+                    logical_placement_id,
                     x: row.rect().x,
                     y: row.rect().y,
                     cols: u32::from(row.rect().width),
@@ -377,8 +637,11 @@ impl PaneFrames {
                     z: -1,
                     scrollback_offset: 0,
                 });
-                scene.assets.push(SurfaceGraphicsAsset { key, data });
+                if scene_assets.insert(key.clone()) {
+                    scene.assets.push(SurfaceGraphicsAsset { key, data });
+                }
             }
+            self.trim_icon_cache(&active_icons);
             self.graphics.set_scene(scene);
             self.rows = rows;
         }
@@ -402,6 +665,12 @@ impl PaneFrames {
                     ChromeRow::TabUnderline(_) => {
                         cell.modifier &= !Modifier::UNDERLINED.bits();
                     }
+                    ChromeRow::Icon(icon)
+                        if icon.placement.icon == crate::ui::SidebarIcon::GitBranch =>
+                    {
+                        cell.symbol = " ".into();
+                    }
+                    ChromeRow::Icon(_) => {}
                 }
             }
         }

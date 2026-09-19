@@ -69,6 +69,7 @@ fn layout(panes: &[PaneSurfacePane], active_tab: Option<Rect>) -> ChromeLayout<'
         pane_area: Rect::default(),
         sidebar: None,
         active_tab,
+        icons: &[],
     }
 }
 
@@ -140,6 +141,327 @@ fn tab_underline_png_uses_only_the_bottom_two_pixel_rows() {
     }
     .png()
     .is_err());
+}
+
+fn icon_row(icon: crate::ui::SidebarIcon, color: Option<[u8; 3]>) -> IconRow {
+    IconRow {
+        placement: SidebarIconPlacement {
+            icon,
+            rect: Rect::new(0, 0, 2, 1),
+        },
+        cell_width: CELL.width_px,
+        cell_height: CELL.height_px,
+        color,
+    }
+}
+
+fn decode_icon(row: IconRow) -> (png::OutputInfo, Vec<u8>) {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(row.png().unwrap()))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    pixels.truncate(info.buffer_size());
+    (info, pixels)
+}
+
+#[test]
+fn sidebar_svg_raster_preserves_dimensions_viewport_colors_and_straight_alpha() {
+    use crate::ui::SidebarIcon;
+
+    for icon in [
+        SidebarIcon::GitBranch,
+        SidebarIcon::Pi,
+        SidebarIcon::Claude,
+        SidebarIcon::Codex,
+    ] {
+        let color = (icon == SidebarIcon::GitBranch).then_some([12, 34, 56]);
+        let (info, pixels) = decode_icon(icon_row(icon, color));
+        assert_eq!((info.width, info.height), (34, 36));
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        for (index, pixel) in pixels.chunks_exact(4).enumerate() {
+            if pixel[3] == 0 {
+                continue;
+            }
+            let x = index % 34;
+            let y = index / 34;
+            assert!((7..27).contains(&x), "{icon:?} x={x}");
+            assert!((8..28).contains(&y), "{icon:?} y={y}");
+        }
+    }
+
+    let (_, branch) = decode_icon(icon_row(SidebarIcon::GitBranch, Some([12, 34, 56])));
+    let branch_color = crate::platform::ghostty_image_color([12, 34, 56]);
+    assert!(branch
+        .chunks_exact(4)
+        .any(|pixel| { (1..255).contains(&pixel[3]) && pixel[..3] == branch_color }));
+    assert!(branch
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] == 255)
+        .all(|pixel| pixel[..3] == branch_color));
+
+    let (_, pi) = decode_icon(icon_row(SidebarIcon::Pi, None));
+    let ink = pi
+        .chunks_exact(4)
+        .enumerate()
+        .filter(|(_, pixel)| pixel[3] > 0)
+        .map(|(index, _)| (index % 34, index / 34))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        (
+            ink.iter().map(|(x, _)| *x).min(),
+            ink.iter().map(|(x, _)| x + 1).max(),
+            ink.iter().map(|(_, y)| *y).min(),
+            ink.iter().map(|(_, y)| y + 1).max(),
+        ),
+        (Some(7), Some(27), Some(8), Some(28)),
+    );
+    let white = crate::platform::ghostty_image_color([255, 255, 255]);
+    assert!(pi
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] > 0)
+        .all(|pixel| pixel[..3] == white));
+
+    let (_, claude) = decode_icon(icon_row(SidebarIcon::Claude, None));
+    let orange = crate::platform::ghostty_image_color([217, 119, 87]);
+    assert!(claude
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] == 255)
+        .any(|pixel| pixel[..3] == orange));
+
+    let (_, codex) = decode_icon(icon_row(SidebarIcon::Codex, None));
+    let colors = codex
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] == 255)
+        .map(|pixel| [pixel[0], pixel[1], pixel[2]])
+        .collect::<HashSet<_>>();
+    assert!(colors.len() > 10, "gradient colors: {}", colors.len());
+}
+
+#[test]
+fn post_styled_final_branch_rgb_colors_the_svg() {
+    use crate::ui::SidebarIcon;
+
+    let palette = fixture(0).2;
+    let icons = [SidebarIconPlacement {
+        icon: SidebarIcon::GitBranch,
+        rect: Rect::new(0, 0, 2, 1),
+    }];
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
+    put_text(
+        &mut buffer,
+        0,
+        0,
+        2,
+        " ",
+        Style::default().fg(Color::Rgb(255, 0, 0)),
+    );
+    let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
+    frame.cells[0].fg = crate::protocol::color_to_u32(Color::Rgb(12, 34, 56));
+    let mut frames = PaneFrames::default();
+    frames.compose(
+        &mut frame,
+        ChromeLayout {
+            panes: &[],
+            pane_area: Rect::default(),
+            sidebar: None,
+            active_tab: None,
+            icons: &icons,
+        },
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+
+    let cached = frames.icon_cache.values().next().expect("branch raster");
+    let mut reader = png::Decoder::new(std::io::Cursor::new(&cached.png))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    pixels.truncate(info.buffer_size());
+    let expected = crate::platform::ghostty_image_color([12, 34, 56]);
+    let opaque = pixels
+        .chunks_exact(4)
+        .find(|pixel| pixel[3] == 255)
+        .expect("opaque branch pixel");
+    assert_eq!(opaque[..3], expected);
+}
+
+#[test]
+fn non_rgb_final_branch_foregrounds_keep_the_powerline_fallback() {
+    use crate::ui::SidebarIcon;
+
+    let palette = fixture(0).2;
+    let icons = [SidebarIconPlacement {
+        icon: SidebarIcon::GitBranch,
+        rect: Rect::new(0, 0, 2, 1),
+    }];
+    for foreground in [Color::Indexed(2), Color::Reset] {
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
+        put_text(&mut buffer, 0, 0, 2, " ", Style::default().fg(foreground));
+        let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
+        let bytes = PaneFrames::default().compose(
+            &mut frame,
+            ChromeLayout {
+                panes: &[],
+                pane_area: Rect::default(),
+                sidebar: None,
+                active_tab: None,
+                icons: &icons,
+            },
+            CELL,
+            &palette,
+            &surface::Occlusion::default(),
+        );
+        assert!(!bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
+        assert_eq!(frame.cells[0].symbol, "");
+    }
+}
+
+#[test]
+fn sidebar_icons_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
+    use crate::ui::SidebarIcon;
+
+    let palette = fixture(0).2;
+    let icons = [
+        SidebarIconPlacement {
+            icon: SidebarIcon::GitBranch,
+            rect: Rect::new(1, 1, 2, 1),
+        },
+        SidebarIconPlacement {
+            icon: SidebarIcon::Pi,
+            rect: Rect::new(1, 2, 2, 1),
+        },
+        SidebarIconPlacement {
+            icon: SidebarIcon::Pi,
+            rect: Rect::new(5, 2, 2, 1),
+        },
+    ];
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 12, 4));
+    put_text(
+        &mut buffer,
+        1,
+        1,
+        2,
+        " ",
+        Style::default().fg(Color::Rgb(91, 89, 92)),
+    );
+    let original = FrameData::from_ratatui_buffer(&buffer, None);
+    let chrome = |icons| ChromeLayout {
+        panes: &[],
+        pane_area: Rect::default(),
+        sidebar: None,
+        active_tab: None,
+        icons,
+    };
+    let mut frames = PaneFrames::default();
+    frames.set_scope("sidebar-icons");
+    let mut frame = original.clone();
+    let first = frames.compose(
+        &mut frame,
+        chrome(&icons),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert_eq!(
+        first.windows(5).filter(|bytes| *bytes == b"a=t,t").count(),
+        2
+    );
+    assert_eq!(frames.icon_rasterizations, 2);
+    assert_eq!(frames.icon_cache.len(), 2);
+    assert_eq!(frame.cells[13].symbol, " ");
+    assert_eq!(frame.cells[14].symbol, " ");
+
+    let mut replay_frame = original.clone();
+    let replay = frames.compose(
+        &mut replay_frame,
+        chrome(&icons),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(!replay.windows(5).any(|bytes| bytes == b"a=t,t"));
+    assert_eq!(frames.icon_rasterizations, 2);
+    assert_eq!(replay_frame.cells[13].symbol, " ");
+
+    let mut occlusion = surface::Occlusion::default();
+    occlusion.cover(icons[0].rect);
+    let mut occluded_frame = original.clone();
+    frames.compose(
+        &mut occluded_frame,
+        chrome(&icons),
+        CELL,
+        &palette,
+        &occlusion,
+    );
+    assert_eq!(occluded_frame.cells[13].symbol, "");
+
+    let mut changed_frame = original.clone();
+    changed_frame.cells[13].fg = crate::protocol::color_to_u32(Color::Rgb(255, 0, 0));
+    frames.compose(
+        &mut changed_frame,
+        chrome(&icons),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert_eq!(frames.icon_rasterizations, 3);
+
+    let mut resized_frame = original.clone();
+    resized_frame.cells[13].fg = crate::protocol::color_to_u32(Color::Rgb(255, 0, 0));
+    frames.compose(
+        &mut resized_frame,
+        chrome(&icons),
+        HostCellSize {
+            width_px: 18,
+            height_px: 38,
+        },
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert_eq!(frames.icon_rasterizations, 5);
+
+    let cleanup = frames.cleanup();
+    assert!(!cleanup.is_empty());
+    assert!(frames.rows.is_empty());
+}
+
+#[test]
+fn sidebar_icon_cache_is_bounded_across_branch_colors() {
+    use crate::ui::SidebarIcon;
+
+    let palette = fixture(0).2;
+    let icons = (0..40)
+        .map(|row| SidebarIconPlacement {
+            icon: SidebarIcon::GitBranch,
+            rect: Rect::new(0, row, 2, 1),
+        })
+        .collect::<Vec<_>>();
+    let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 40));
+    for row in 0..40 {
+        buffer[(0, row)]
+            .set_symbol("")
+            .set_fg(Color::Rgb(row as u8, 20, 30));
+    }
+    let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
+    let mut frames = PaneFrames::default();
+    frames.compose(
+        &mut frame,
+        ChromeLayout {
+            panes: &[],
+            pane_area: Rect::default(),
+            sidebar: None,
+            active_tab: None,
+            icons: &icons,
+        },
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert_eq!(frames.icon_rasterizations, 40);
+    assert_eq!(frames.icon_cache.len(), MAX_ICON_CACHE_ENTRIES);
 }
 
 #[test]
@@ -339,6 +661,7 @@ fn sidebar_rows_use_sidebar_interior_and_remain_independent_of_pane_colors() {
             pane_area: Rect::default(),
             sidebar: Some(Rect::new(1, 0, 5, 6)),
             active_tab: None,
+            icons: &[],
         },
         CELL,
         &palette,
@@ -633,13 +956,44 @@ fn rounded_border_strips_cut_out_corners_and_join_straight_edges() {
 
 fn cached_profile_fixture(
     count: usize,
-) -> (FrameData, Vec<PaneSurfacePane>, Palette, Rect, Rect, Rect) {
+) -> (
+    FrameData,
+    Vec<PaneSurfacePane>,
+    Palette,
+    Rect,
+    Rect,
+    Rect,
+    Vec<SidebarIconPlacement>,
+) {
+    use crate::ui::SidebarIcon;
+
     let (pane_frame, panes, palette) = fixture(count);
     let sidebar = Rect::new(1, 0, 20, 40);
     let pane_area = Rect::new(22, 0, 120, 40);
     let mut buffer = Buffer::empty(Rect::new(0, 0, 142, 40));
     buffer.set_style(buffer.area, Style::default().bg(palette.pane_gap_bg));
     super::super::render::render_sidebar_frame(&mut buffer, sidebar, &palette);
+    for (y, text, style) in [
+        (4, " main", Style::default().fg(palette.overlay0)),
+        (5, "  Pi", Style::default().fg(palette.text)),
+        (6, "  Claude", Style::default().fg(palette.text)),
+        (7, "  Codex", Style::default().fg(palette.text)),
+    ] {
+        put_text(&mut buffer, 3, y, 16, text, style);
+    }
+    let icons = [
+        SidebarIcon::GitBranch,
+        SidebarIcon::Pi,
+        SidebarIcon::Claude,
+        SidebarIcon::Codex,
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(index, icon)| SidebarIconPlacement {
+        icon,
+        rect: Rect::new(3, 4 + index as u16, 2, 1),
+    })
+    .collect();
     let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
     for y in 0..40_usize {
         for x in 0..120_usize {
@@ -653,6 +1007,7 @@ fn cached_profile_fixture(
         sidebar,
         pane_area,
         Rect::new(30, 0, 8, 1),
+        icons,
     )
 }
 
@@ -660,7 +1015,7 @@ fn cached_profile_fixture(
 #[ignore]
 fn pixel_pane_frame_render_scale_profile() {
     for count in [1, 15] {
-        let (original, panes, palette, sidebar, pane_area, active_tab) =
+        let (original, panes, palette, sidebar, pane_area, active_tab, icons) =
             cached_profile_fixture(count);
         let mut frames = PaneFrames::default();
         frames.set_scope("benchmark");
@@ -670,8 +1025,10 @@ fn pixel_pane_frame_render_scale_profile() {
             pane_area,
             sidebar: Some(sidebar),
             active_tab: Some(active_tab),
+            icons: &icons,
         };
         frames.compose(&mut original.clone(), chrome(), CELL, &palette, &occlusion);
+        assert_eq!(frames.icon_rasterizations, 4);
         let mut samples = Vec::new();
         for _ in 0..101 {
             let mut frame = original.clone();
@@ -679,11 +1036,12 @@ fn pixel_pane_frame_render_scale_profile() {
             let bytes = frames.compose(&mut frame, chrome(), CELL, &palette, &occlusion);
             samples.push(start.elapsed().as_micros());
             assert!(!bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
+            assert_eq!(frames.icon_rasterizations, 4);
         }
         samples.sort_unstable();
         eprintln!(
-            "cached pixel borders, sidebar, and tab underline: {count} panes, median {} us/frame",
-            samples[50]
+            "cached pixel borders, sidebar, tab underline, and 4 SVG icons: {count} panes, median {} us/frame; {} warm rasterizations",
+            samples[50], frames.icon_rasterizations
         );
     }
 }

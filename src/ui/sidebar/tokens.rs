@@ -3,6 +3,25 @@ use crate::config::{
     SpacesSidebarConfig,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum SidebarIcon {
+    GitBranch,
+    Pi,
+    Claude,
+    Codex,
+}
+
+impl SidebarIcon {
+    fn for_agent(agent: crate::detect::Agent) -> Option<Self> {
+        match agent {
+            crate::detect::Agent::Pi => Some(Self::Pi),
+            crate::detect::Agent::Claude => Some(Self::Claude),
+            crate::detect::Agent::Codex => Some(Self::Codex),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedToken {
     pub kind: ResolvedTokenKind,
@@ -17,10 +36,16 @@ pub(crate) enum ResolvedTokenKind {
     Workspace(String),
     Tab(String),
     Pane(String),
-    Agent(String),
+    Agent {
+        icon: Option<SidebarIcon>,
+        label: String,
+    },
     TerminalTitle(String),
     Branch(String),
-    GitStatus { ahead: usize, behind: usize },
+    GitStatus {
+        ahead: usize,
+        behind: usize,
+    },
     Custom(String),
 }
 
@@ -32,7 +57,7 @@ impl ResolvedTokenKind {
             | Self::Workspace(value)
             | Self::Tab(value)
             | Self::Pane(value)
-            | Self::Agent(value)
+            | Self::Agent { label: value, .. }
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Custom(value) => Some(value),
@@ -94,9 +119,12 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::Pane => context
                             .pane
                             .map(|value| ResolvedTokenKind::Pane(value.to_string())),
-                        AgentSidebarToken::Agent => context
-                            .agent_label
-                            .map(|value| ResolvedTokenKind::Agent(value.to_string())),
+                        AgentSidebarToken::Agent => {
+                            context.agent_label.map(|value| ResolvedTokenKind::Agent {
+                                icon: context.canonical_agent.and_then(SidebarIcon::for_agent),
+                                label: value.to_string(),
+                            })
+                        }
                         AgentSidebarToken::TerminalTitle => context
                             .terminal_title
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
@@ -274,7 +302,7 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
             .fg(Color::Blue)
             .add_modifier(Modifier::BOLD | Modifier::DIM);
         for width in [4, 40] {
-            let spans = super::super::resolved_token_spans(
+            let spans = super::super::resolved_token_line(
                 &rows[0],
                 ("*", theme),
                 theme,
@@ -283,7 +311,9 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                 theme,
                 &super::super::Palette::catppuccin(),
                 width,
-            );
+                false,
+            )
+            .spans;
             assert_eq!(spans.len(), 1);
             assert!(super::super::display_width(&spans[0].content) <= width);
             assert_eq!(spans[0].style.fg, Some(Color::Rgb(255, 0, 0)));
@@ -362,7 +392,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             assert_eq!(rows[0].len(), count);
             assert_eq!(
                 rows[0].last().unwrap().kind,
-                ResolvedTokenKind::Agent("pi".into())
+                ResolvedTokenKind::Agent {
+                    icon: None,
+                    label: "pi".into(),
+                }
             );
         }
         entry.canonical_agent = Some(crate::detect::Agent::Pi);
@@ -395,7 +428,13 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             )).unwrap();
             let entry = entry();
             let rows = agent_rows(&config, context(&entry), "working");
-            assert_eq!(rows[0][0].kind, ResolvedTokenKind::Agent("pi".into()));
+            assert_eq!(
+                rows[0][0].kind,
+                ResolvedTokenKind::Agent {
+                    icon: Some(SidebarIcon::Pi),
+                    label: "pi".into(),
+                }
+            );
         }
     }
 
@@ -423,9 +462,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         );
         assert_eq!(
             rows[1],
-            vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
-                "pi".into()
-            ))]
+            vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent {
+                icon: Some(SidebarIcon::Pi),
+                label: "pi".into(),
+            })]
         );
     }
 
@@ -522,9 +562,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
 
         assert_eq!(
             agent_rows(&config, context(&pi), "working"),
-            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent(
-                "renamed pi".into()
-            ))]]
+            vec![vec![ResolvedToken::unstyled(ResolvedTokenKind::Agent {
+                icon: Some(SidebarIcon::Pi),
+                label: "renamed pi".into(),
+            })]]
         );
 
         pi.canonical_agent = None;
@@ -537,7 +578,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     fn rendered_text(tokens: &[ResolvedToken], max_width: usize) -> String {
-        super::super::resolved_token_spans(
+        super::super::resolved_token_line(
             tokens,
             ("*", Default::default()),
             Default::default(),
@@ -546,10 +587,136 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             Default::default(),
             &super::super::Palette::catppuccin(),
             max_width,
+            false,
         )
+        .spans
         .iter()
         .map(|span| span.content.as_ref())
         .collect()
+    }
+
+    #[test]
+    fn canonical_agent_identity_selects_icons_independently_from_display_labels() {
+        let mut entry = entry();
+        let config = AgentsSidebarConfig {
+            rows: vec![vec![AgentSidebarToken::Agent]],
+            ..Default::default()
+        };
+        for (identity, display, expected) in [
+            ("pi", "Pairing", Some(SidebarIcon::Pi)),
+            ("claude-code", "Sonnet", Some(SidebarIcon::Claude)),
+            ("/usr/local/bin/codex", "Review", Some(SidebarIcon::Codex)),
+            ("gemini", "Gemini", None),
+        ] {
+            entry.agent_label = Some(display.into());
+            entry.canonical_agent = crate::detect::parse_agent_label(identity);
+            assert_eq!(
+                agent_rows(&config, context(&entry), "working")[0][0].kind,
+                ResolvedTokenKind::Agent {
+                    icon: expected,
+                    label: display.into(),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn agent_icon_slots_exist_only_for_visible_known_agents_with_pixel_chrome() {
+        use ratatui::style::Style;
+
+        let render = |token: ResolvedTokenKind, width, pixel_icons| {
+            super::super::resolved_token_line(
+                &[ResolvedToken::unstyled(token)],
+                ("*", Style::default()),
+                Style::default(),
+                Style::default(),
+                Style::default(),
+                Style::default(),
+                &super::super::Palette::catppuccin(),
+                width,
+                pixel_icons,
+            )
+        };
+        let known = || ResolvedTokenKind::Agent {
+            icon: Some(SidebarIcon::Pi),
+            label: "助手".into(),
+        };
+        let line = render(known(), 5, true);
+        assert_eq!(
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "  助…"
+        );
+        assert_eq!(
+            line.icons,
+            vec![super::super::TokenIcon {
+                icon: SidebarIcon::Pi,
+                column: 0,
+            }]
+        );
+        let line = render(known(), 5, false);
+        assert_eq!(line.spans[0].content, "助手");
+        assert!(line.icons.is_empty());
+        let line = render(
+            ResolvedTokenKind::Agent {
+                icon: None,
+                label: "gemini".into(),
+            },
+            5,
+            true,
+        );
+        assert_eq!(line.spans[0].content, "gemi…");
+        assert!(line.icons.is_empty());
+        for (label, width) in [("", 20), ("\u{301}", 20), ("pi", 2)] {
+            let line = render(
+                ResolvedTokenKind::Agent {
+                    icon: Some(SidebarIcon::Pi),
+                    label: label.into(),
+                },
+                width,
+                true,
+            );
+            assert!(line.spans.is_empty());
+            assert!(line.icons.is_empty());
+        }
+    }
+
+    #[test]
+    fn branch_icon_metadata_records_only_its_semantic_position() {
+        use ratatui::style::{Color, Style};
+
+        let token = [ResolvedToken::unstyled(ResolvedTokenKind::Branch(
+            "main".into(),
+        ))];
+        for foreground in [Color::Rgb(12, 34, 56), Color::Indexed(2), Color::Reset] {
+            let line = super::super::resolved_token_line(
+                &token,
+                ("*", Style::default()),
+                Style::default(),
+                Style::default(),
+                Style::default().fg(foreground),
+                Style::default(),
+                &super::super::Palette::catppuccin(),
+                20,
+                true,
+            );
+            assert_eq!(
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                " main"
+            );
+            assert_eq!(
+                line.icons,
+                vec![super::super::TokenIcon {
+                    icon: SidebarIcon::GitBranch,
+                    column: 0,
+                }]
+            );
+        }
     }
 
     #[test]
@@ -637,7 +804,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                 suppress_git_details: false,
             },
         );
-        let spans = super::super::resolved_token_spans(
+        let spans = super::super::resolved_token_line(
             &rows[0],
             ("*", Style::default()),
             Style::default(),
@@ -646,7 +813,9 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             Style::default(),
             &super::super::Palette::catppuccin(),
             20,
-        );
+            true,
+        )
+        .spans;
 
         assert_eq!(rendered_text(&rows[0], 20), " main");
         assert_eq!(spans.len(), 2);

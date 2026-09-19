@@ -46,7 +46,12 @@ impl ClientShellState {
             self.graphics_cell_size,
             occlusion,
         );
-        if !self.config.pixel_pane_borders || sidebar.is_none() {
+        if sidebar.is_none()
+            || !pane_frames::pixel_chrome_available(
+                self.config.pixel_pane_borders,
+                self.graphics_cell_size,
+            )
+        {
             frame.graphics.extend(self.pane_frames.cleanup());
             return;
         }
@@ -57,6 +62,7 @@ impl ClientShellState {
                 pane_area: Rect::default(),
                 sidebar,
                 active_tab: None,
+                icons: &self.sidebar_icon_placements,
             },
             self.graphics_cell_size,
             &self.config.palette,
@@ -90,7 +96,10 @@ impl ClientShellState {
             self.graphics_cell_size,
             occlusion,
         );
-        if !self.config.pixel_pane_borders {
+        if !pane_frames::pixel_chrome_available(
+            self.config.pixel_pane_borders,
+            self.graphics_cell_size,
+        ) {
             frame.graphics.extend(self.pane_frames.cleanup());
             return;
         }
@@ -120,6 +129,7 @@ impl ClientShellState {
                 pane_area: layout.pane_surface,
                 sidebar: (!layout.sidebar.is_empty()).then_some(layout.sidebar),
                 active_tab,
+                icons: &self.sidebar_icon_placements,
             },
             self.graphics_cell_size,
             &self.config.palette,

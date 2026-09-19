@@ -314,10 +314,14 @@ pub(crate) fn render_sidebar(
             config.status_indicators,
             entry,
             rows,
-            true,
-            selected,
-            dragged,
+            WorkspaceRowPresentation {
+                endpoint_active: true,
+                selected,
+                dragged,
+            },
             palette,
+            state.pixel_icons,
+            state.sidebar_icons,
         );
         let group_toggle = render_parent_group_toggle(
             buffer,
@@ -419,6 +423,8 @@ pub(crate) fn render_sidebar(
         config,
         state.agent_scroll,
         hits,
+        state.pixel_icons,
+        state.sidebar_icons,
     );
 
     hits.sidebar_toggle = Rect::new(
@@ -634,6 +640,12 @@ pub(in crate::client::shell) fn workspace_rows(
     )
 }
 
+pub(in crate::client::shell) struct WorkspaceRowPresentation {
+    pub(in crate::client::shell) endpoint_active: bool,
+    pub(in crate::client::shell) selected: bool,
+    pub(in crate::client::shell) dragged: bool,
+}
+
 pub(in crate::client::shell) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
@@ -642,10 +654,10 @@ pub(in crate::client::shell) fn render_workspace_rows(
     indicators: crate::config::StatusIndicatorStyle,
     entry: &WorkspaceEntry,
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
-    endpoint_active: bool,
-    selected: bool,
-    dragged: bool,
+    presentation: WorkspaceRowPresentation,
     palette: &Palette,
+    pixel_icons: bool,
+    sidebar_icons: &mut Vec<super::pane_frames::SidebarIconPlacement>,
 ) {
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
@@ -678,7 +690,7 @@ pub(in crate::client::shell) fn render_workspace_rows(
         } else {
             x = x.saturating_add(3);
         }
-        let highlighted = endpoint_active && workspace.focused || dragged;
+        let highlighted = presentation.endpoint_active && workspace.focused || presentation.dragged;
         let workspace_style = Style::default()
             .fg(if highlighted {
                 palette.text
@@ -690,12 +702,14 @@ pub(in crate::client::shell) fn render_workspace_rows(
             } else {
                 Modifier::empty()
             });
-        let secondary_style = Style::default().fg(if endpoint_active && workspace.focused {
-            palette.mauve
-        } else {
-            palette.overlay0
-        });
-        let spans = crate::ui::resolved_token_spans(
+        let secondary_style =
+            Style::default().fg(if presentation.endpoint_active && workspace.focused {
+                palette.mauve
+            } else {
+                palette.overlay0
+            });
+        let max_width = area.right().saturating_sub(2).saturating_sub(x);
+        let line = crate::ui::resolved_token_line(
             row,
             (
                 status_icon(status, indicators),
@@ -706,19 +720,23 @@ pub(in crate::client::shell) fn render_workspace_rows(
             secondary_style,
             Style::default().fg(palette.overlay1),
             palette,
-            area.right().saturating_sub(2).saturating_sub(x) as usize,
+            max_width as usize,
+            pixel_icons,
         );
-        Paragraph::new(Line::from(spans)).render(
-            Rect::new(x, y, area.right().saturating_sub(2).saturating_sub(x), 1),
-            buffer,
+        super::pane_frames::record_token_icons(
+            &line.icons,
+            (x, y),
+            area.right().saturating_sub(2),
+            sidebar_icons,
         );
+        Paragraph::new(Line::from(line.spans)).render(Rect::new(x, y, max_width, 1), buffer);
     }
 
-    let background = if selected {
+    let background = if presentation.selected {
         Some(palette.selection_bg)
-    } else if dragged {
+    } else if presentation.dragged {
         Some(palette.surface1)
-    } else if endpoint_active && workspace.focused {
+    } else if presentation.endpoint_active && workspace.focused {
         Some(palette.active_row_bg)
     } else {
         None

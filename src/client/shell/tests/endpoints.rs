@@ -1890,6 +1890,19 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         .find(|cell| cell.symbol() == "×")
         .expect("stale blocked icon");
     assert_eq!(stale_icon.fg, state.config.palette.overlay0);
+
+    state.config.pixel_pane_borders = true;
+    state.set_graphics_cell_size(17, 36);
+    state.compose(100, 28).expect("stale icon frame");
+    assert!(state.sidebar_icon_placements.iter().any(|placement| {
+        placement.icon == crate::ui::SidebarIcon::Pi && placement.rect.width == 2
+    }));
+    state.invalidate_pane_surface();
+    state.compose(100, 28).expect("unavailable endpoint frame");
+    assert!(state
+        .sidebar_icon_placements
+        .iter()
+        .any(|placement| placement.icon == crate::ui::SidebarIcon::Pi));
 }
 
 #[cfg(unix)]

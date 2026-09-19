@@ -56,6 +56,8 @@ pub(super) fn render_agent_panel(
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
+    pixel_icons: bool,
+    sidebar_icons: &mut Vec<super::pane_frames::SidebarIconPlacement>,
 ) {
     if !render_agent_panel_header(
         buffer,
@@ -82,7 +84,7 @@ pub(super) fn render_agent_panel(
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+            render_agent_row(buffer, rect, row, config, pixel_icons, sidebar_icons);
         },
     );
 }
@@ -323,6 +325,8 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
+    pixel_icons: bool,
+    sidebar_icons: &mut Vec<super::pane_frames::SidebarIconPlacement>,
 ) {
     let palette = &config.palette;
     let row_style = if row.focused {
@@ -355,8 +359,7 @@ pub(super) fn render_agent_row(
     };
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 1 } else { 3 };
-        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
-        spans.extend(crate::ui::resolved_token_spans(
+        let line = crate::ui::resolved_token_line(
             tokens,
             icon,
             status_style,
@@ -365,7 +368,16 @@ pub(super) fn render_agent_row(
             secondary,
             palette,
             rect.width.saturating_sub(indent as u16) as usize,
-        ));
+            pixel_icons,
+        );
+        super::pane_frames::record_token_icons(
+            &line.icons,
+            (rect.x.saturating_add(indent as u16), rect.y + index as u16),
+            rect.right(),
+            sidebar_icons,
+        );
+        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+        spans.extend(line.spans);
         Paragraph::new(Line::from(spans)).style(row_style).render(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,

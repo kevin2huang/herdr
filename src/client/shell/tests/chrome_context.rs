@@ -1,5 +1,54 @@
 use super::*;
 
+fn uploaded_sidebar_icon_pixels(frame: &FrameData) -> Vec<Vec<u8>> {
+    use base64::Engine;
+
+    let graphics = String::from_utf8_lossy(&frame.graphics);
+    let mut images = Vec::new();
+    let mut pending = String::new();
+    for command in graphics.split("\x1b_G").skip(1) {
+        let packet = command.split("\x1b\\").next().unwrap();
+        let Some((headers, body)) = packet.split_once(';') else {
+            continue;
+        };
+        if headers.contains("a=t") || !pending.is_empty() {
+            pending.push_str(body);
+            if !headers.contains("m=1") {
+                let image = base64::engine::general_purpose::STANDARD
+                    .decode(&pending)
+                    .unwrap();
+                pending.clear();
+                let mut reader = png::Decoder::new(std::io::Cursor::new(image))
+                    .read_info()
+                    .unwrap();
+                if (reader.info().width, reader.info().height) != (34, 36) {
+                    continue;
+                }
+                let mut pixels = vec![0; reader.output_buffer_size()];
+                let info = reader.next_frame(&mut pixels).unwrap();
+                pixels.truncate(info.buffer_size());
+                images.push(pixels);
+            }
+        }
+    }
+    images
+}
+
+fn frame_label_column(frame: &FrameData, label: &str) -> usize {
+    frame
+        .cells
+        .chunks(usize::from(frame.width))
+        .find_map(|row| {
+            let text = row
+                .iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>();
+            text.find(label)
+                .map(|byte| unicode_width::UnicodeWidthStr::width(&text[..byte]))
+        })
+        .expect("label present")
+}
+
 #[test]
 fn disabled_pixel_chrome_preserves_font_underlines_and_retires_images() {
     let mut config = ClientShellConfig::from_config(&Config::default());
@@ -22,6 +71,169 @@ fn disabled_pixel_chrome_preserves_font_underlines_and_retires_images() {
             assert!(frame.graphics.is_empty());
         }
     }
+}
+
+#[test]
+fn custom_dim_branch_keeps_the_styled_powerline_fallback() {
+    let config: Config = toml::from_str(
+        r##"
+[ui.sidebar.spaces]
+rows = [[{token = "branch", fg = "#ff0000", dim = true}]]
+"##,
+    )
+    .unwrap();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_graphics_cell_size(17, 36);
+    state.set_snapshot(Box::new(snapshot()));
+    state.config.pixel_pane_borders = true;
+
+    let frame = state.compose(106, 30).expect("custom dim frame");
+    let branch = frame
+        .cells
+        .iter()
+        .find(|cell| cell.symbol == "")
+        .expect("Powerline branch fallback");
+    assert_eq!(
+        crate::protocol::u32_to_color(branch.fg),
+        Color::Rgb(255, 0, 0)
+    );
+    assert_ne!(branch.modifier & Modifier::DIM.bits(), 0);
+    assert!(uploaded_sidebar_icon_pixels(&frame).is_empty());
+}
+
+#[test]
+fn stale_endpoint_branch_keeps_the_dimmed_powerline_fallback() {
+    let config: Config = toml::from_str(
+        r##"
+[ui.sidebar.spaces]
+rows = [[{token = "branch", fg = "#6c7086"}]]
+"##,
+    )
+    .unwrap();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_graphics_cell_size(17, 36);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_endpoint_status(
+        &crate::client::endpoint::ClientEndpointId::Local,
+        crate::client::endpoint::ClientEndpointStatus::Reconnecting,
+    );
+
+    state.config.pixel_pane_borders = true;
+    let frame = state.compose(106, 30).expect("stale endpoint frame");
+    let branch = frame
+        .cells
+        .iter()
+        .find(|cell| cell.symbol == "")
+        .expect("Powerline branch fallback");
+    assert_ne!(branch.modifier & Modifier::DIM.bits(), 0);
+    assert!(uploaded_sidebar_icon_pixels(&frame).is_empty());
+}
+
+#[test]
+fn unavailable_nonexpanded_layouts_do_not_reserve_provider_icon_columns() {
+    for (width, collapsed_mode, expected_column) in [
+        (60, SidebarCollapsedModeConfig::Compact, 1),
+        (106, SidebarCollapsedModeConfig::Hidden, 1),
+        (106, SidebarCollapsedModeConfig::Compact, 3),
+    ] {
+        let mut config = Config::default();
+        config.ui.sidebar_start_collapsed = width == 106;
+        config.ui.sidebar_collapsed_mode = collapsed_mode;
+        config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+        let mut projected = snapshot();
+        projected.agents.push(ClientShellAgent {
+            pane_id: "pane_1".into(),
+            workspace_id: "ws_1".into(),
+            tab_id: "tab_1".into(),
+            name: Some("pi".into()),
+            display_agent: Some("pi".into()),
+            agent: Some("pi".into()),
+            title: None,
+            terminal_title: None,
+            terminal_title_stripped: None,
+            agent_status: AgentStatus::Working,
+            state_change_seq: 1,
+            state_labels: Vec::new(),
+            tokens: Vec::new(),
+            focused: true,
+        });
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+        state.set_snapshot(Box::new(projected));
+        state.set_graphics_cell_size(17, 36);
+        state.config.pixel_pane_borders = true;
+
+        let frame = state.compose(width, 30).expect("unavailable frame");
+        assert!(uploaded_sidebar_icon_pixels(&frame).is_empty());
+        assert!(state.sidebar_icon_placements.is_empty());
+        assert_eq!(frame_label_column(&frame, "pi"), expected_column);
+    }
+}
+
+#[test]
+fn expanded_sidebar_icons_follow_graphics_availability_and_layout_mode() {
+    let mut projected = snapshot();
+    projected.agents.push(ClientShellAgent {
+        pane_id: "pane_1".into(),
+        workspace_id: "ws_1".into(),
+        tab_id: "tab_1".into(),
+        name: Some("Pairing".into()),
+        display_agent: Some("Pairing".into()),
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Working,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: true,
+    });
+    let mut config = Config::default();
+    config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+    let mut client_config = ClientShellConfig::from_config(&config);
+    client_config.pixel_pane_borders = true;
+    let mut state = ClientShellState::new(client_config);
+    state.set_graphics_cell_size(17, 36);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    state.compose(106, 30).expect("expanded frame");
+    assert_eq!(state.sidebar_icon_placements.len(), 2);
+    assert!(state
+        .sidebar_icon_placements
+        .iter()
+        .all(|placement| placement.rect.width == 2 && placement.rect.height == 1));
+    assert!(state
+        .sidebar_icon_placements
+        .iter()
+        .any(|placement| placement.icon == crate::ui::SidebarIcon::Pi));
+    assert!(state
+        .sidebar_icon_placements
+        .iter()
+        .any(|placement| placement.icon == crate::ui::SidebarIcon::GitBranch));
+
+    state.invalidate_pane_surface();
+    state.compose(106, 30).expect("unavailable frame");
+    assert_eq!(state.sidebar_icon_placements.len(), 2);
+
+    state.set_pane_surface(surface());
+    state.sidebar_collapsed = true;
+    state.compose(106, 30).expect("compact frame");
+    assert!(state.sidebar_icon_placements.is_empty());
+    state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
+    state.compose(106, 30).expect("hidden frame");
+    assert!(state.sidebar_icon_placements.is_empty());
+
+    state.sidebar_collapsed = false;
+    state.compose(60, 20).expect("mobile frame");
+    assert!(state.sidebar_icon_placements.is_empty());
+
+    state.set_graphics_cell_size(1, 1);
+    let fallback = state.compose(106, 30).expect("font fallback frame");
+    assert!(state.sidebar_icon_placements.is_empty());
+    assert!(frame_rows(&fallback)
+        .iter()
+        .any(|row| row.contains(" main")));
 }
 
 #[test]

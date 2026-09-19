@@ -8,7 +8,7 @@ use ratatui::{
 
 pub(crate) use self::tokens::{
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows, AgentTokenContext,
-    ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    ResolvedToken, ResolvedTokenKind, SidebarIcon, SpaceTokenContext,
 };
 use super::text::{display_width, truncate_end};
 use crate::app::state::Palette;
@@ -105,7 +105,19 @@ pub(crate) fn agent_panel_entries_from(
 
 const GIT_BRANCH_PREFIX: &str = " ";
 
-pub(crate) fn resolved_token_spans(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TokenIcon {
+    pub(crate) icon: SidebarIcon,
+    pub(crate) column: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TokenLine {
+    pub(crate) spans: Vec<Span<'static>>,
+    pub(crate) icons: Vec<TokenIcon>,
+}
+
+pub(crate) fn resolved_token_line(
     resolved: &[ResolvedToken],
     state_icon: (&str, Style),
     state_text_style: Style,
@@ -114,11 +126,13 @@ pub(crate) fn resolved_token_spans(
     custom_style: Style,
     palette: &Palette,
     max_width: usize,
-) -> Vec<Span<'static>> {
+    pixel_icons: bool,
+) -> TokenLine {
     let fixed_widths = resolved
         .iter()
         .map(|token| match &token.kind {
             ResolvedTokenKind::StateIcon => display_width(state_icon.0),
+            ResolvedTokenKind::Agent { icon: Some(_), .. } if pixel_icons => 2,
             ResolvedTokenKind::Branch(_) => display_width(GIT_BRANCH_PREFIX),
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 usize::from(*ahead > 0) * display_width(&format!("↑{ahead}"))
@@ -136,10 +150,10 @@ pub(crate) fn resolved_token_spans(
             | ResolvedTokenKind::Workspace(text)
             | ResolvedTokenKind::Tab(text)
             | ResolvedTokenKind::Pane(text)
-            | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::TerminalTitle(text)
             | ResolvedTokenKind::Branch(text)
             | ResolvedTokenKind::Custom(text) => display_width(text),
+            ResolvedTokenKind::Agent { label, .. } => display_width(label),
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -162,7 +176,12 @@ pub(crate) fn resolved_token_spans(
     let mut active = resolved
         .iter()
         .zip(&flexible_widths)
-        .map(|(token, width)| !matches!(token.kind, ResolvedTokenKind::Branch(_)) || *width > 0)
+        .map(|(token, width)| {
+            !matches!(
+                token.kind,
+                ResolvedTokenKind::Branch(_) | ResolvedTokenKind::Agent { .. }
+            ) || *width > 0
+        })
         .collect::<Vec<_>>();
     if minimum_width(&active) > max_width {
         for (index, width) in flexible_widths.iter().enumerate() {
@@ -178,6 +197,12 @@ pub(crate) fn resolved_token_spans(
             if minimum_width(&active) > max_width {
                 active[index] = false;
             }
+        }
+        for index in 0..resolved.len() {
+            if minimum_width(&active) <= max_width {
+                break;
+            }
+            active[index] = false;
         }
     }
     let visible_indices = active
@@ -220,69 +245,115 @@ pub(crate) fn resolved_token_spans(
     }
 
     let mut spans = Vec::new();
+    let mut icons = Vec::new();
+    let mut column = 0;
     for (position, index) in visible_indices.iter().copied().enumerate() {
         let token = &resolved[index];
         if position > 0 {
             let previous = &resolved[visible_indices[position - 1]];
+            let separator = tokens::separator(previous, token);
+            column += display_width(separator);
             spans.push(Span::styled(
-                tokens::separator(previous, token),
+                separator,
                 Style::default().fg(palette.overlay0),
             ));
         }
         match &token.kind {
-            ResolvedTokenKind::StateIcon => spans.push(Span::styled(
-                state_icon.0.to_string(),
-                apply_token_style(state_icon.1, token.style),
-            )),
-            ResolvedTokenKind::StateText(text) => spans.push(Span::styled(
-                truncate_end(text, budgets[index]),
-                apply_token_style(state_text_style, token.style),
-            )),
-            ResolvedTokenKind::Workspace(text) => spans.push(Span::styled(
-                truncate_end(text, budgets[index]),
-                apply_token_style(workspace_style, token.style),
-            )),
+            ResolvedTokenKind::StateIcon => {
+                column += display_width(state_icon.0);
+                spans.push(Span::styled(
+                    state_icon.0.to_string(),
+                    apply_token_style(state_icon.1, token.style),
+                ));
+            }
+            ResolvedTokenKind::StateText(text) => {
+                let text = truncate_end(text, budgets[index]);
+                column += display_width(&text);
+                spans.push(Span::styled(
+                    text,
+                    apply_token_style(state_text_style, token.style),
+                ));
+            }
+            ResolvedTokenKind::Workspace(text) => {
+                let text = truncate_end(text, budgets[index]);
+                column += display_width(&text);
+                spans.push(Span::styled(
+                    text,
+                    apply_token_style(workspace_style, token.style),
+                ));
+            }
             ResolvedTokenKind::Machine(text)
             | ResolvedTokenKind::Tab(text)
-            | ResolvedTokenKind::Pane(text)
-            | ResolvedTokenKind::Agent(text) => spans.push(Span::styled(
-                truncate_end(text, budgets[index]),
-                apply_token_style(secondary_style, token.style),
-            )),
+            | ResolvedTokenKind::Pane(text) => {
+                let text = truncate_end(text, budgets[index]);
+                column += display_width(&text);
+                spans.push(Span::styled(
+                    text,
+                    apply_token_style(secondary_style, token.style),
+                ));
+            }
+            ResolvedTokenKind::Agent { icon, label } => {
+                let style = apply_token_style(secondary_style, token.style);
+                if let Some(icon) = icon.filter(|_| pixel_icons) {
+                    icons.push(TokenIcon { icon, column });
+                    spans.push(Span::styled("  ", style));
+                    column += 2;
+                }
+                let text = truncate_end(label, budgets[index]);
+                column += display_width(&text);
+                spans.push(Span::styled(text, style));
+            }
             ResolvedTokenKind::Branch(text) => {
                 let style = apply_token_style(secondary_style, token.style);
+                if pixel_icons {
+                    icons.push(TokenIcon {
+                        icon: SidebarIcon::GitBranch,
+                        column,
+                    });
+                }
                 spans.push(Span::styled(GIT_BRANCH_PREFIX, style));
-                spans.push(Span::styled(truncate_end(text, budgets[index]), style));
+                column += display_width(GIT_BRANCH_PREFIX);
+                let text = truncate_end(text, budgets[index]);
+                column += display_width(&text);
+                spans.push(Span::styled(text, style));
             }
             ResolvedTokenKind::GitStatus { ahead, behind } => {
                 if *ahead > 0 {
+                    let text = format!("↑{ahead}");
+                    column += display_width(&text);
                     spans.push(Span::styled(
-                        format!("↑{ahead}"),
+                        text,
                         apply_token_style(Style::default().fg(palette.green), token.style),
                     ));
                 }
                 if *ahead > 0 && *behind > 0 {
+                    column += 1;
                     spans.push(Span::styled(
                         " ",
                         apply_token_style(Style::default(), token.style),
                     ));
                 }
                 if *behind > 0 {
+                    let text = format!("↓{behind}");
+                    column += display_width(&text);
                     spans.push(Span::styled(
-                        format!("↓{behind}"),
+                        text,
                         apply_token_style(Style::default().fg(palette.red), token.style),
                     ));
                 }
             }
             ResolvedTokenKind::TerminalTitle(text) | ResolvedTokenKind::Custom(text) => {
+                let text = truncate_end(text, budgets[index]);
+                column += display_width(&text);
                 spans.push(Span::styled(
-                    truncate_end(text, budgets[index]),
+                    text,
                     apply_token_style(custom_style, token.style),
                 ));
             }
         }
     }
-    spans
+    debug_assert!(column <= max_width);
+    TokenLine { spans, icons }
 }
 
 fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {

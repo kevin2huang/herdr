@@ -2,13 +2,14 @@ use super::render::{display_width, put_right_text, put_text, ShellRenderState};
 use super::*;
 
 fn collapsed_groups_for_endpoint<'a>(
-    state: &'a ShellRenderState<'_>,
+    collapsed_groups: &'a HashSet<String>,
+    remote_collapsed_groups: &'a HashMap<ClientEndpointId, HashSet<String>>,
     endpoint_id: &ClientEndpointId,
 ) -> Option<&'a HashSet<String>> {
     if endpoint_id.is_local() {
-        Some(state.collapsed_groups)
+        Some(collapsed_groups)
     } else {
-        state.remote_collapsed_groups.get(endpoint_id)
+        remote_collapsed_groups.get(endpoint_id)
     }
 }
 
@@ -253,8 +254,12 @@ pub(super) fn render_expanded(
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                .unwrap_or(&empty_collapsed_groups);
+            let collapsed_groups = collapsed_groups_for_endpoint(
+                state.collapsed_groups,
+                state.remote_collapsed_groups,
+                &endpoint.endpoint_id,
+            )
+            .unwrap_or(&empty_collapsed_groups);
             rows.extend(
                 super::sidebar::workspace_entries(snapshot, collapsed_groups)
                     .into_iter()
@@ -280,8 +285,12 @@ pub(super) fn render_expanded(
             Row::Endpoint(_) => 1,
             Row::Workspace { endpoint, entry } => {
                 let endpoint = &state.endpoints[*endpoint];
-                let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups);
+                let collapsed_groups = collapsed_groups_for_endpoint(
+                    state.collapsed_groups,
+                    state.remote_collapsed_groups,
+                    &endpoint.endpoint_id,
+                )
+                .unwrap_or(&empty_collapsed_groups);
                 endpoint
                     .snapshot
                     .as_deref()
@@ -411,8 +420,12 @@ pub(super) fn render_expanded(
                 let Some(workspace) = snapshot.workspaces.get(entry.index) else {
                     continue;
                 };
-                let collapsed_groups = collapsed_groups_for_endpoint(state, &endpoint.endpoint_id)
-                    .unwrap_or(&empty_collapsed_groups);
+                let collapsed_groups = collapsed_groups_for_endpoint(
+                    state.collapsed_groups,
+                    state.remote_collapsed_groups,
+                    &endpoint.endpoint_id,
+                )
+                .unwrap_or(&empty_collapsed_groups);
                 let status = super::sidebar::displayed_workspace_status(
                     snapshot,
                     workspace,
@@ -447,10 +460,14 @@ pub(super) fn render_expanded(
                     config.status_indicators,
                     entry,
                     tokens,
-                    endpoint_active,
-                    selected,
-                    false,
+                    super::sidebar::WorkspaceRowPresentation {
+                        endpoint_active,
+                        selected,
+                        dragged: false,
+                    },
                     palette,
+                    state.pixel_icons,
+                    state.sidebar_icons,
                 );
                 if selected && palette.selection_bg == ratatui::style::Color::Reset {
                     buffer.set_style(nested, Style::default().bg(palette.active_row_bg));
@@ -536,6 +553,8 @@ pub(super) fn render_expanded(
         config,
         state.agent_scroll,
         hits,
+        state.pixel_icons,
+        state.sidebar_icons,
     );
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
