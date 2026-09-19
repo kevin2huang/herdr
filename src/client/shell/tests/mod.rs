@@ -7,6 +7,17 @@ use crate::protocol::{
 use crossterm::event::MouseEvent;
 mod text_editing;
 
+pub(super) fn sidebar_highlights(state: &ClientShellState) -> Vec<Rect> {
+    state
+        .sidebar_decorations
+        .iter()
+        .filter_map(|decoration| match decoration {
+            pane_frames::SidebarDecoration::Highlight(rect) => Some(*rect),
+            pane_frames::SidebarDecoration::Icon(_) => None,
+        })
+        .collect()
+}
+
 pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: "boot-1".into(),

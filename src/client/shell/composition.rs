@@ -21,9 +21,9 @@ fn restore_mode_bar(
 
 impl ClientShellState {
     fn compose_unavailable(&mut self, cols: u16, rows: u16) -> FrameData {
-        self.sidebar_icon_placements.clear();
+        self.sidebar_decorations.clear();
         let layout = self.layout(cols, rows);
-        let pixel_icons = !self.sidebar_collapsed
+        let pixel_sidebar = !self.sidebar_collapsed
             && !layout.sidebar.is_empty()
             && pane_frames::pixel_chrome_available(
                 self.config.pixel_pane_borders,
@@ -85,8 +85,8 @@ impl ClientShellState {
             reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
             dragged_workspace_id: None,
             workspace_drop_indicator_row: None,
-            pixel_icons,
-            sidebar_icons: &mut self.sidebar_icon_placements,
+            pixel_sidebar,
+            sidebar_decorations: &mut self.sidebar_decorations,
         };
         if let Some(snapshot) = local_snapshot {
             render::render_sidebar(
@@ -164,7 +164,7 @@ impl ClientShellState {
     }
 
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
-        self.sidebar_icon_placements.clear();
+        self.sidebar_decorations.clear();
         self.last_composed_at = Some(std::time::Instant::now());
         self.selection_repaint_deadline = None;
         if self.last_composed_size != Some((cols, rows)) && self.mode == ClientShellMode::Navigate {
@@ -216,7 +216,7 @@ impl ClientShellState {
             buffer.area,
             Style::default().bg(self.config.palette.pane_gap_bg),
         );
-        let pixel_icons = pane_frames::pixel_chrome_available(
+        let pixel_sidebar = pane_frames::pixel_chrome_available(
             self.config.pixel_pane_borders,
             self.graphics_cell_size,
         );
@@ -246,8 +246,8 @@ impl ClientShellState {
                 reveal_navigation_workspace: &mut self.reveal_navigation_workspace,
                 dragged_workspace_id,
                 workspace_drop_indicator_row,
-                pixel_icons,
-                sidebar_icons: &mut self.sidebar_icon_placements,
+                pixel_sidebar,
+                sidebar_decorations: &mut self.sidebar_decorations,
             },
         );
         self.hits.panes = surface

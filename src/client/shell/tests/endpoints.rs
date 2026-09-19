@@ -73,6 +73,67 @@ fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
     (state, endpoint_id)
 }
 
+#[test]
+fn endpoint_sidebar_records_focused_selected_agent_and_navigation_highlights() {
+    let (mut state, remote_id) = state_with_remote();
+    state.config.pixel_pane_borders = true;
+    state.set_graphics_cell_size(17, 36);
+
+    let mut local = snapshot();
+    local.agents = vec![agent("local agent", AgentStatus::Working, 1)];
+    state.set_snapshot(Box::new(local));
+    let mut remote = snapshot();
+    remote.boot_id = "remote-boot".into();
+    remote.workspaces[0].label = "remote-workspace".into();
+    remote.agents = vec![agent("remote agent", AgentStatus::Working, 1)];
+    state.set_endpoint_snapshot(&remote_id, Box::new(remote));
+    state.mode = ClientShellMode::Navigate;
+    state.navigate_workspace_id = state.navigation_target(&remote_id, "ws_1");
+
+    state.compose(100, 28).expect("endpoint highlight frame");
+    let local_workspace = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id == ClientEndpointId::Local && hit.workspace_id == "ws_1")
+        .expect("local focused workspace")
+        .rect;
+    let remote_workspace = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.endpoint_id == remote_id && hit.workspace_id == "ws_1")
+        .expect("remote selected workspace")
+        .rect;
+    let local_agent = state
+        .hits
+        .endpoint_agents
+        .iter()
+        .find(|(_, endpoint_id, pane_id)| {
+            endpoint_id == &ClientEndpointId::Local && pane_id == "pane_1"
+        })
+        .expect("active endpoint agent")
+        .0;
+    assert_eq!(local_workspace, Rect::new(2, 4, 24, 2));
+    assert_eq!(remote_workspace, Rect::new(2, 7, 24, 2));
+    assert_eq!(local_agent, Rect::new(2, 17, 24, 2));
+    let highlights = sidebar_highlights(&state);
+    assert_eq!(
+        highlights,
+        vec![
+            Rect::new(4, 4, 22, 2),
+            Rect::new(4, 7, 22, 2),
+            Rect::new(2, 17, 24, 2),
+        ]
+    );
+    assert_eq!(state.hits.machines.len(), 2);
+    assert!(state
+        .hits
+        .machines
+        .iter()
+        .all(|machine| !highlights.contains(&machine.rect)));
+}
+
 fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
     let (mut state, remote) = state_with_remote();
     for endpoint_id in [ClientEndpointId::Local, remote.clone()] {
@@ -1894,15 +1955,22 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
     state.config.pixel_pane_borders = true;
     state.set_graphics_cell_size(17, 36);
     state.compose(100, 28).expect("stale icon frame");
-    assert!(state.sidebar_icon_placements.iter().any(|placement| {
-        placement.icon == crate::ui::SidebarIcon::Pi && placement.rect.width == 2
+    assert!(state.sidebar_decorations.iter().any(|decoration| {
+        matches!(
+            decoration,
+            pane_frames::SidebarDecoration::Icon(placement)
+                if placement.icon == crate::ui::SidebarIcon::Pi && placement.rect.width == 2
+        )
     }));
     state.invalidate_pane_surface();
     state.compose(100, 28).expect("unavailable endpoint frame");
-    assert!(state
-        .sidebar_icon_placements
-        .iter()
-        .any(|placement| placement.icon == crate::ui::SidebarIcon::Pi));
+    assert!(state.sidebar_decorations.iter().any(|decoration| {
+        matches!(
+            decoration,
+            pane_frames::SidebarDecoration::Icon(placement)
+                if placement.icon == crate::ui::SidebarIcon::Pi
+        )
+    }));
 }
 
 #[cfg(unix)]

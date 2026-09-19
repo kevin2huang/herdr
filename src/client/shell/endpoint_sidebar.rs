@@ -466,8 +466,8 @@ pub(super) fn render_expanded(
                         dragged: false,
                     },
                     palette,
-                    state.pixel_icons,
-                    state.sidebar_icons,
+                    state.pixel_sidebar,
+                    state.sidebar_decorations,
                 );
                 if selected && palette.selection_bg == ratatui::style::Color::Reset {
                     buffer.set_style(nested, Style::default().bg(palette.active_row_bg));
@@ -553,8 +553,8 @@ pub(super) fn render_expanded(
         config,
         state.agent_scroll,
         hits,
-        state.pixel_icons,
-        state.sidebar_icons,
+        state.pixel_sidebar,
+        state.sidebar_decorations,
     );
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),

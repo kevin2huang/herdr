@@ -846,7 +846,7 @@ pub(crate) struct ClientShellState {
     pub(super) pending_pane_surface: Option<PaneSurfaceFrame>,
     pub(super) graphics: crate::kitty_graphics::surface::ClientState,
     pub(super) pane_frames: pane_frames::PaneFrames,
-    pub(super) sidebar_icon_placements: Vec<pane_frames::SidebarIconPlacement>,
+    pub(super) sidebar_decorations: Vec<pane_frames::SidebarDecoration>,
     pub(super) graphics_cell_size: crate::kitty_graphics::HostCellSize,
     pub(super) popup_terminal_id: Option<String>,
     pub(super) sidebar_collapsed: bool,
@@ -1007,7 +1007,7 @@ impl ClientShellState {
             pending_pane_surface: None,
             graphics: crate::kitty_graphics::surface::ClientState::default(),
             pane_frames: pane_frames::PaneFrames::default(),
-            sidebar_icon_placements: Vec::new(),
+            sidebar_decorations: Vec::new(),
             graphics_cell_size: crate::kitty_graphics::HostCellSize {
                 width_px: 1,
                 height_px: 1,

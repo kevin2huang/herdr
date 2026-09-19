@@ -320,8 +320,8 @@ pub(crate) fn render_sidebar(
                 dragged,
             },
             palette,
-            state.pixel_icons,
-            state.sidebar_icons,
+            state.pixel_sidebar,
+            state.sidebar_decorations,
         );
         let group_toggle = render_parent_group_toggle(
             buffer,
@@ -423,8 +423,8 @@ pub(crate) fn render_sidebar(
         config,
         state.agent_scroll,
         hits,
-        state.pixel_icons,
-        state.sidebar_icons,
+        state.pixel_sidebar,
+        state.sidebar_decorations,
     );
 
     hits.sidebar_toggle = Rect::new(
@@ -656,8 +656,8 @@ pub(in crate::client::shell) fn render_workspace_rows(
     rows: Vec<Vec<crate::ui::ResolvedToken>>,
     presentation: WorkspaceRowPresentation,
     palette: &Palette,
-    pixel_icons: bool,
-    sidebar_icons: &mut Vec<super::pane_frames::SidebarIconPlacement>,
+    pixel_sidebar: bool,
+    sidebar_decorations: &mut Vec<super::pane_frames::SidebarDecoration>,
 ) {
     for (row_index, row) in rows.iter().enumerate() {
         let y = area.y + row_index as u16;
@@ -721,13 +721,13 @@ pub(in crate::client::shell) fn render_workspace_rows(
             Style::default().fg(palette.overlay1),
             palette,
             max_width as usize,
-            pixel_icons,
+            pixel_sidebar,
         );
         super::pane_frames::record_token_icons(
             &line.icons,
             (x, y),
             area.right().saturating_sub(2),
-            sidebar_icons,
+            sidebar_decorations,
         );
         Paragraph::new(Line::from(line.spans)).render(Rect::new(x, y, max_width, 1), buffer);
     }
@@ -746,6 +746,9 @@ pub(in crate::client::shell) fn render_workspace_rows(
             for x in area.x..area.right() {
                 buffer[(x, y)].set_bg(background);
             }
+        }
+        if pixel_sidebar {
+            sidebar_decorations.push(super::pane_frames::SidebarDecoration::Highlight(area));
         }
     }
 }

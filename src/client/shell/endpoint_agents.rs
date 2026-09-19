@@ -51,8 +51,8 @@ pub(super) fn render_expanded(
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
-    pixel_icons: bool,
-    sidebar_icons: &mut Vec<super::pane_frames::SidebarIconPlacement>,
+    pixel_sidebar: bool,
+    sidebar_decorations: &mut Vec<super::pane_frames::SidebarDecoration>,
 ) {
     if !super::agent_sidebar::render_agent_panel_header(
         buffer,
@@ -79,8 +79,8 @@ pub(super) fn render_expanded(
                 rect,
                 &row.agent,
                 config,
-                pixel_icons,
-                sidebar_icons,
+                pixel_sidebar,
+                sidebar_decorations,
             );
             if row.stale {
                 buffer.set_style(

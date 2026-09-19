@@ -70,6 +70,7 @@ fn disabled_pixel_chrome_preserves_font_underlines_and_retires_images() {
         } else {
             assert!(frame.graphics.is_empty());
         }
+        assert_eq!(!sidebar_highlights(&state).is_empty(), enabled);
     }
 }
 
@@ -164,7 +165,7 @@ fn unavailable_nonexpanded_layouts_do_not_reserve_provider_icon_columns() {
 
         let frame = state.compose(width, 30).expect("unavailable frame");
         assert!(uploaded_sidebar_icon_pixels(&frame).is_empty());
-        assert!(state.sidebar_icon_placements.is_empty());
+        assert!(state.sidebar_decorations.is_empty());
         assert_eq!(frame_label_column(&frame, "pi"), expected_column);
     }
 }
@@ -198,42 +199,122 @@ fn expanded_sidebar_icons_follow_graphics_availability_and_layout_mode() {
     state.set_pane_surface(surface());
 
     state.compose(106, 30).expect("expanded frame");
-    assert_eq!(state.sidebar_icon_placements.len(), 2);
-    assert!(state
-        .sidebar_icon_placements
+    let focused_workspace = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_1")
+        .expect("focused workspace")
+        .rect;
+    let focused_agent = state.hits.agents[0].0;
+    assert_eq!(focused_workspace, Rect::new(2, 3, 24, 2));
+    assert_eq!(focused_agent, Rect::new(2, 18, 24, 1));
+    assert_eq!(
+        sidebar_highlights(&state),
+        vec![Rect::new(2, 3, 24, 2), Rect::new(2, 18, 24, 1)]
+    );
+    let icons = state
+        .sidebar_decorations
+        .iter()
+        .filter_map(|decoration| match decoration {
+            pane_frames::SidebarDecoration::Icon(placement) => Some(placement),
+            pane_frames::SidebarDecoration::Highlight(_) => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(icons.len(), 2);
+    assert!(icons
         .iter()
         .all(|placement| placement.rect.width == 2 && placement.rect.height == 1));
-    assert!(state
-        .sidebar_icon_placements
+    assert!(icons
         .iter()
         .any(|placement| placement.icon == crate::ui::SidebarIcon::Pi));
-    assert!(state
-        .sidebar_icon_placements
+    assert!(icons
         .iter()
         .any(|placement| placement.icon == crate::ui::SidebarIcon::GitBranch));
 
     state.invalidate_pane_surface();
     state.compose(106, 30).expect("unavailable frame");
-    assert_eq!(state.sidebar_icon_placements.len(), 2);
+    assert_eq!(
+        sidebar_highlights(&state),
+        vec![Rect::new(2, 3, 24, 2), Rect::new(2, 18, 24, 1)]
+    );
+    assert_eq!(
+        state
+            .sidebar_decorations
+            .iter()
+            .filter(|decoration| matches!(decoration, pane_frames::SidebarDecoration::Icon(_)))
+            .count(),
+        2
+    );
 
+    state.config.mouse_capture = false;
+    state.compose(106, 30).expect("no-mouse frame");
+    assert_eq!(
+        sidebar_highlights(&state),
+        vec![Rect::new(2, 3, 24, 2), Rect::new(2, 18, 24, 1)]
+    );
+    state.config.mouse_capture = true;
     state.set_pane_surface(surface());
     state.sidebar_collapsed = true;
     state.compose(106, 30).expect("compact frame");
-    assert!(state.sidebar_icon_placements.is_empty());
+    assert!(state.sidebar_decorations.is_empty());
     state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
     state.compose(106, 30).expect("hidden frame");
-    assert!(state.sidebar_icon_placements.is_empty());
+    assert!(state.sidebar_decorations.is_empty());
 
     state.sidebar_collapsed = false;
     state.compose(60, 20).expect("mobile frame");
-    assert!(state.sidebar_icon_placements.is_empty());
+    assert!(state.sidebar_decorations.is_empty());
 
     state.set_graphics_cell_size(1, 1);
     let fallback = state.compose(106, 30).expect("font fallback frame");
-    assert!(state.sidebar_icon_placements.is_empty());
+    assert!(state.sidebar_decorations.is_empty());
     assert!(frame_rows(&fallback)
         .iter()
         .any(|row| row.contains(" main")));
+}
+
+#[test]
+fn dragged_workspace_records_its_full_multiline_highlight_rect() {
+    let mut projected = snapshot();
+    let mut dragged = projected.workspaces[0].clone();
+    dragged.workspace_id = "ws_2".into();
+    dragged.number = 2;
+    dragged.label = "dragged workspace".into();
+    dragged.focused = false;
+    projected.workspaces.push(dragged);
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.pixel_pane_borders = true;
+    let mut state = ClientShellState::new(config);
+    state.set_graphics_cell_size(17, 36);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    state.chrome_drag = Some(ClientChromeDrag::Workspace {
+        source_workspace_id: "ws_2".into(),
+        target: None,
+    });
+
+    state.compose(106, 30).expect("dragged workspace frame");
+    let focused = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_1")
+        .expect("focused workspace")
+        .rect;
+    let dragged = state
+        .hits
+        .workspaces
+        .iter()
+        .find(|hit| hit.workspace_id == "ws_2")
+        .expect("dragged workspace")
+        .rect;
+    assert_eq!(focused, Rect::new(2, 3, 24, 2));
+    assert_eq!(dragged, Rect::new(2, 5, 24, 2));
+    assert_eq!(
+        sidebar_highlights(&state),
+        vec![Rect::new(2, 3, 24, 2), Rect::new(2, 5, 24, 2)]
+    );
 }
 
 #[test]

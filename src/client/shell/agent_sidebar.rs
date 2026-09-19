@@ -56,8 +56,8 @@ pub(super) fn render_agent_panel(
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
     hits: &mut ShellHitMap,
-    pixel_icons: bool,
-    sidebar_icons: &mut Vec<super::pane_frames::SidebarIconPlacement>,
+    pixel_sidebar: bool,
+    sidebar_decorations: &mut Vec<super::pane_frames::SidebarDecoration>,
 ) {
     if !render_agent_panel_header(
         buffer,
@@ -84,7 +84,14 @@ pub(super) fn render_agent_panel(
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config, pixel_icons, sidebar_icons);
+            render_agent_row(
+                buffer,
+                rect,
+                row,
+                config,
+                pixel_sidebar,
+                sidebar_decorations,
+            );
         },
     );
 }
@@ -325,8 +332,8 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
-    pixel_icons: bool,
-    sidebar_icons: &mut Vec<super::pane_frames::SidebarIconPlacement>,
+    pixel_sidebar: bool,
+    sidebar_decorations: &mut Vec<super::pane_frames::SidebarDecoration>,
 ) {
     let palette = &config.palette;
     let row_style = if row.focused {
@@ -368,13 +375,13 @@ pub(super) fn render_agent_row(
             secondary,
             palette,
             rect.width.saturating_sub(indent as u16) as usize,
-            pixel_icons,
+            pixel_sidebar,
         );
         super::pane_frames::record_token_icons(
             &line.icons,
             (rect.x.saturating_add(indent as u16), rect.y + index as u16),
             rect.right(),
-            sidebar_icons,
+            sidebar_decorations,
         );
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
         spans.extend(line.spans);
@@ -382,6 +389,9 @@ pub(super) fn render_agent_row(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
+    }
+    if row.focused && pixel_sidebar {
+        sidebar_decorations.push(super::pane_frames::SidebarDecoration::Highlight(rect));
     }
 }
 

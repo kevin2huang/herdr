@@ -69,7 +69,7 @@ fn layout(panes: &[PaneSurfacePane], active_tab: Option<Rect>) -> ChromeLayout<'
         pane_area: Rect::default(),
         sidebar: None,
         active_tab,
-        icons: &[],
+        decorations: &[],
     }
 }
 
@@ -238,15 +238,84 @@ fn sidebar_svg_raster_preserves_dimensions_viewport_colors_and_straight_alpha() 
     assert!(colors.len() > 10, "gradient colors: {}", colors.len());
 }
 
+fn decode_highlight(row: RoundedHighlight) -> (png::OutputInfo, Vec<u8>) {
+    let mut reader = png::Decoder::new(std::io::Cursor::new(row.png().unwrap()))
+        .read_info()
+        .unwrap();
+    let mut pixels = vec![0; reader.output_buffer_size()];
+    let info = reader.next_frame(&mut pixels).unwrap();
+    pixels.truncate(info.buffer_size());
+    (info, pixels)
+}
+
+#[test]
+fn rounded_highlight_raster_has_literal_insets_radius_color_and_dimensions() {
+    let (info, pixels) = decode_highlight(RoundedHighlight {
+        rect: Rect::new(0, 0, 10, 2),
+        cell_width: 17,
+        cell_height: 36,
+        fill: [169, 220, 118],
+    });
+    assert_eq!((info.width, info.height), (170, 72));
+    assert_eq!(info.color_type, png::ColorType::Rgba);
+    assert_eq!(&pixels[..170 * 2 * 4], &vec![0; 170 * 2 * 4]);
+    assert_eq!(&pixels[170 * 70 * 4..], &vec![0; 170 * 2 * 4]);
+
+    let pixel = |x: usize, y: usize| &pixels[(y * 170 + x) * 4..][..4];
+    let fill = if cfg!(target_os = "macos") {
+        [179, 219, 130]
+    } else {
+        [169, 220, 118]
+    };
+    assert_eq!(pixel(0, 2), [0, 0, 0, 0]);
+    assert_eq!(pixel(3, 2), [fill[0], fill[1], fill[2], 117]);
+    assert_eq!(pixel(4, 2), [fill[0], fill[1], fill[2], 204]);
+    assert_eq!(pixel(5, 2), [fill[0], fill[1], fill[2], 249]);
+    assert_eq!(pixel(6, 2), [fill[0], fill[1], fill[2], 255]);
+    assert_eq!(pixel(0, 8), [fill[0], fill[1], fill[2], 255]);
+    assert_eq!(pixel(85, 2), [fill[0], fill[1], fill[2], 255]);
+}
+
+#[test]
+fn rounded_highlight_radius_clamps_for_short_one_row_assets() {
+    let (info, pixels) = decode_highlight(RoundedHighlight {
+        rect: Rect::new(0, 0, 1, 1),
+        cell_width: 2,
+        cell_height: 6,
+        fill: [12, 34, 56],
+    });
+    assert_eq!((info.width, info.height), (2, 6));
+    assert_eq!(&pixels[..2 * 2 * 4], &vec![0; 2 * 2 * 4]);
+    assert_eq!(&pixels[2 * 4 * 4..], &vec![0; 2 * 2 * 4]);
+    let converted = crate::platform::ghostty_image_color([12, 34, 56]);
+    for pixel in pixels[2 * 2 * 4..2 * 4 * 4].chunks_exact(4) {
+        assert_eq!(pixel, [converted[0], converted[1], converted[2], 202]);
+    }
+}
+
+#[test]
+fn rounded_highlight_raster_height_follows_large_row_rects() {
+    let (info, pixels) = decode_highlight(RoundedHighlight {
+        rect: Rect::new(0, 0, 1, 100),
+        cell_width: 17,
+        cell_height: 36,
+        fill: [45, 40, 55],
+    });
+    assert_eq!((info.width, info.height), (17, 3600));
+    assert_eq!(&pixels[..17 * 2 * 4], &vec![0; 17 * 2 * 4]);
+    assert_eq!(&pixels[17 * 3598 * 4..], &vec![0; 17 * 2 * 4]);
+    assert_eq!(pixels[(1800 * 17 + 8) * 4 + 3], 255);
+}
+
 #[test]
 fn post_styled_final_branch_rgb_colors_the_svg() {
     use crate::ui::SidebarIcon;
 
     let palette = fixture(0).2;
-    let icons = [SidebarIconPlacement {
+    let icons = [SidebarDecoration::Icon(SidebarIconPlacement {
         icon: SidebarIcon::GitBranch,
         rect: Rect::new(0, 0, 2, 1),
-    }];
+    })];
     let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
     put_text(
         &mut buffer,
@@ -266,14 +335,18 @@ fn post_styled_final_branch_rgb_colors_the_svg() {
             pane_area: Rect::default(),
             sidebar: None,
             active_tab: None,
-            icons: &icons,
+            decorations: &icons,
         },
         CELL,
         &palette,
         &surface::Occlusion::default(),
     );
 
-    let cached = frames.icon_cache.values().next().expect("branch raster");
+    let cached = frames
+        .sidebar_asset_cache
+        .values()
+        .next()
+        .expect("branch raster");
     let mut reader = png::Decoder::new(std::io::Cursor::new(&cached.png))
         .read_info()
         .unwrap();
@@ -293,10 +366,10 @@ fn non_rgb_final_branch_foregrounds_keep_the_powerline_fallback() {
     use crate::ui::SidebarIcon;
 
     let palette = fixture(0).2;
-    let icons = [SidebarIconPlacement {
+    let icons = [SidebarDecoration::Icon(SidebarIconPlacement {
         icon: SidebarIcon::GitBranch,
         rect: Rect::new(0, 0, 2, 1),
-    }];
+    })];
     for foreground in [Color::Indexed(2), Color::Reset] {
         let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 1));
         put_text(&mut buffer, 0, 0, 2, " ", Style::default().fg(foreground));
@@ -308,7 +381,7 @@ fn non_rgb_final_branch_foregrounds_keep_the_powerline_fallback() {
                 pane_area: Rect::default(),
                 sidebar: None,
                 active_tab: None,
-                icons: &icons,
+                decorations: &icons,
             },
             CELL,
             &palette,
@@ -320,7 +393,7 @@ fn non_rgb_final_branch_foregrounds_keep_the_powerline_fallback() {
 }
 
 #[test]
-fn sidebar_icons_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
+fn sidebar_decorations_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
     use crate::ui::SidebarIcon;
 
     let palette = fixture(0).2;
@@ -338,6 +411,7 @@ fn sidebar_icons_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
             rect: Rect::new(5, 2, 2, 1),
         },
     ];
+    let decorations = icons.map(SidebarDecoration::Icon);
     let mut buffer = Buffer::empty(Rect::new(0, 0, 12, 4));
     put_text(
         &mut buffer,
@@ -348,19 +422,19 @@ fn sidebar_icons_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
         Style::default().fg(Color::Rgb(91, 89, 92)),
     );
     let original = FrameData::from_ratatui_buffer(&buffer, None);
-    let chrome = |icons| ChromeLayout {
+    let chrome = |decorations| ChromeLayout {
         panes: &[],
         pane_area: Rect::default(),
         sidebar: None,
         active_tab: None,
-        icons,
+        decorations,
     };
     let mut frames = PaneFrames::default();
     frames.set_scope("sidebar-icons");
     let mut frame = original.clone();
     let first = frames.compose(
         &mut frame,
-        chrome(&icons),
+        chrome(&decorations),
         CELL,
         &palette,
         &surface::Occlusion::default(),
@@ -369,21 +443,21 @@ fn sidebar_icons_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
         first.windows(5).filter(|bytes| *bytes == b"a=t,t").count(),
         2
     );
-    assert_eq!(frames.icon_rasterizations, 2);
-    assert_eq!(frames.icon_cache.len(), 2);
+    assert_eq!(frames.sidebar_asset_rasterizations, 2);
+    assert_eq!(frames.sidebar_asset_cache.len(), 2);
     assert_eq!(frame.cells[13].symbol, " ");
     assert_eq!(frame.cells[14].symbol, " ");
 
     let mut replay_frame = original.clone();
     let replay = frames.compose(
         &mut replay_frame,
-        chrome(&icons),
+        chrome(&decorations),
         CELL,
         &palette,
         &surface::Occlusion::default(),
     );
     assert!(!replay.windows(5).any(|bytes| bytes == b"a=t,t"));
-    assert_eq!(frames.icon_rasterizations, 2);
+    assert_eq!(frames.sidebar_asset_rasterizations, 2);
     assert_eq!(replay_frame.cells[13].symbol, " ");
 
     let mut occlusion = surface::Occlusion::default();
@@ -391,7 +465,7 @@ fn sidebar_icons_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
     let mut occluded_frame = original.clone();
     frames.compose(
         &mut occluded_frame,
-        chrome(&icons),
+        chrome(&decorations),
         CELL,
         &palette,
         &occlusion,
@@ -402,18 +476,18 @@ fn sidebar_icons_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
     changed_frame.cells[13].fg = crate::protocol::color_to_u32(Color::Rgb(255, 0, 0));
     frames.compose(
         &mut changed_frame,
-        chrome(&icons),
+        chrome(&decorations),
         CELL,
         &palette,
         &surface::Occlusion::default(),
     );
-    assert_eq!(frames.icon_rasterizations, 3);
+    assert_eq!(frames.sidebar_asset_rasterizations, 3);
 
     let mut resized_frame = original.clone();
     resized_frame.cells[13].fg = crate::protocol::color_to_u32(Color::Rgb(255, 0, 0));
     frames.compose(
         &mut resized_frame,
-        chrome(&icons),
+        chrome(&decorations),
         HostCellSize {
             width_px: 18,
             height_px: 38,
@@ -421,26 +495,390 @@ fn sidebar_icons_share_rasters_clear_only_placed_branch_fallbacks_and_retire() {
         &palette,
         &surface::Occlusion::default(),
     );
-    assert_eq!(frames.icon_rasterizations, 5);
+    assert_eq!(frames.sidebar_asset_rasterizations, 5);
 
     let cleanup = frames.cleanup();
     assert!(!cleanup.is_empty());
     assert!(frames.rows.is_empty());
 }
 
+fn highlighted_frame(width: u16, height: u16, background: Color) -> FrameData {
+    let mut buffer = Buffer::empty(Rect::new(0, 0, width, height));
+    buffer.set_style(
+        buffer.area,
+        Style::default()
+            .fg(Color::Rgb(210, 211, 212))
+            .bg(background)
+            .add_modifier(Modifier::BOLD),
+    );
+    for y in 0..height {
+        put_text(
+            &mut buffer,
+            0,
+            y,
+            width,
+            &"abcdefghij".repeat(usize::from(width).div_ceil(10)),
+            Style::default()
+                .fg(Color::Rgb(210, 211, 212))
+                .bg(background)
+                .add_modifier(Modifier::BOLD),
+        );
+    }
+    FrameData::from_ratatui_buffer(&buffer, None)
+}
+
 #[test]
-fn sidebar_icon_cache_is_bounded_across_branch_colors() {
+fn highlight_scene_uses_multirow_geometry_and_clears_only_cell_backgrounds() {
+    let mut palette = fixture(0).2;
+    palette.sidebar_bg = Color::Reset;
+    let decorations = [SidebarDecoration::Highlight(Rect::new(0, 0, 10, 2))];
+    let original = highlighted_frame(10, 2, Color::Rgb(45, 40, 55));
+    let mut frame = original.clone();
+    let mut frames = PaneFrames::default();
+    frames.set_scope("highlight-geometry");
+    let bytes = frames.compose(
+        &mut frame,
+        ChromeLayout {
+            panes: &[],
+            pane_area: Rect::default(),
+            sidebar: None,
+            active_tab: None,
+            decorations: &decorations,
+        },
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    let graphics = String::from_utf8_lossy(&bytes);
+    assert!(graphics.contains("s=170,v=72"), "{graphics}");
+    assert!(graphics.contains("c=10,r=2,z=-2"), "{graphics}");
+    assert_eq!(frames.sidebar_asset_rasterizations, 1);
+    assert_eq!(frames.sidebar_asset_cache.len(), 1);
+    let reset = crate::protocol::color_to_u32(Color::Reset);
+    for (before, after) in original.cells.iter().zip(&frame.cells) {
+        assert_eq!(after.symbol, before.symbol);
+        assert_eq!(after.fg, before.fg);
+        assert_eq!(after.modifier, before.modifier);
+        assert_eq!(after.bg, reset);
+    }
+
+    palette.sidebar_bg = Color::Rgb(3, 4, 5);
+    let mut recolored = original.clone();
+    frames.compose(
+        &mut recolored,
+        ChromeLayout {
+            panes: &[],
+            pane_area: Rect::default(),
+            sidebar: None,
+            active_tab: None,
+            decorations: &decorations,
+        },
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert_eq!(frames.sidebar_asset_rasterizations, 1);
+    assert_eq!(frames.sidebar_asset_cache.len(), 1);
+    assert!(recolored
+        .cells
+        .iter()
+        .all(|cell| { cell.bg == crate::protocol::color_to_u32(Color::Rgb(3, 4, 5)) }));
+}
+
+#[test]
+fn identical_highlights_share_one_bitmap_at_distinct_placements() {
+    let palette = fixture(0).2;
+    let decorations = [
+        SidebarDecoration::Highlight(Rect::new(0, 0, 10, 2)),
+        SidebarDecoration::Highlight(Rect::new(0, 2, 10, 2)),
+    ];
+    let mut frame = highlighted_frame(10, 4, Color::Rgb(45, 40, 55));
+    let mut frames = PaneFrames::default();
+    frames.set_scope("shared-highlights");
+    let bytes = frames.compose(
+        &mut frame,
+        ChromeLayout {
+            panes: &[],
+            pane_area: Rect::default(),
+            sidebar: None,
+            active_tab: None,
+            decorations: &decorations,
+        },
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    let graphics = String::from_utf8_lossy(&bytes);
+    assert_eq!(
+        bytes.windows(5).filter(|bytes| *bytes == b"a=t,t").count(),
+        1
+    );
+    assert_eq!(graphics.matches("z=-2").count(), 2, "{graphics}");
+    assert!(graphics.contains("\x1b[1;1H"), "{graphics}");
+    assert!(graphics.contains("\x1b[3;1H"), "{graphics}");
+    assert_eq!(frames.sidebar_asset_cache.len(), 1);
+    assert_eq!(frames.sidebar_asset_rasterizations, 1);
+}
+
+#[test]
+fn rounded_highlight_and_svg_icon_keep_distinct_z_layers() {
     use crate::ui::SidebarIcon;
 
     let palette = fixture(0).2;
-    let icons = (0..40)
-        .map(|row| SidebarIconPlacement {
+    let decorations = [
+        SidebarDecoration::Highlight(Rect::new(0, 0, 10, 1)),
+        SidebarDecoration::Icon(SidebarIconPlacement {
             icon: SidebarIcon::GitBranch,
-            rect: Rect::new(0, row, 2, 1),
+            rect: Rect::new(1, 0, 2, 1),
+        }),
+    ];
+    let mut frame = highlighted_frame(10, 1, Color::Rgb(45, 40, 55));
+    frame.cells[1].symbol = "".into();
+    frame.cells[1].fg = crate::protocol::color_to_u32(Color::Rgb(91, 89, 92));
+    let original_text = frame.cells[3].symbol.clone();
+    let mut frames = PaneFrames::default();
+    frames.set_scope("highlight-with-icon");
+    let bytes = frames.compose(
+        &mut frame,
+        ChromeLayout {
+            panes: &[],
+            pane_area: Rect::default(),
+            sidebar: None,
+            active_tab: None,
+            decorations: &decorations,
+        },
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    let graphics = String::from_utf8_lossy(&bytes);
+    assert!(graphics.contains("z=-2"), "{graphics}");
+    assert!(graphics.contains("z=-1"), "{graphics}");
+    assert_eq!(frames.sidebar_asset_cache.len(), 2);
+    assert_eq!(frame.cells[1].symbol, " ");
+    assert_eq!(frame.cells[3].symbol, original_text);
+    assert!(frame
+        .cells
+        .iter()
+        .all(|cell| { cell.bg == crate::protocol::color_to_u32(palette.sidebar_bg) }));
+}
+
+#[test]
+fn unsupported_or_hidden_highlights_keep_flat_backgrounds_and_retire_images() {
+    let palette = fixture(0).2;
+    let decorations = [SidebarDecoration::Highlight(Rect::new(0, 0, 10, 1))];
+    let chrome = |decorations| ChromeLayout {
+        panes: &[],
+        pane_area: Rect::default(),
+        sidebar: None,
+        active_tab: None,
+        decorations,
+    };
+    let mut frames = PaneFrames::default();
+    frames.set_scope("highlight-fallbacks");
+    let mut visible = highlighted_frame(10, 1, Color::Rgb(45, 40, 55));
+    frames.compose(
+        &mut visible,
+        chrome(&decorations),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+
+    let mut indexed = highlighted_frame(10, 1, Color::Indexed(4));
+    let retired = frames.compose(
+        &mut indexed,
+        chrome(&decorations),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(String::from_utf8_lossy(&retired).contains("a=d,d=I"));
+    assert!(indexed
+        .cells
+        .iter()
+        .all(|cell| { cell.bg == crate::protocol::color_to_u32(Color::Indexed(4)) }));
+
+    let mut reversed = highlighted_frame(10, 1, Color::Rgb(45, 40, 55));
+    reversed.cells[4].modifier |= Modifier::REVERSED.bits();
+    frames.compose(
+        &mut reversed,
+        chrome(&decorations),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(reversed
+        .cells
+        .iter()
+        .all(|cell| { cell.bg == crate::protocol::color_to_u32(Color::Rgb(45, 40, 55)) }));
+
+    let mut mixed = highlighted_frame(10, 1, Color::Rgb(45, 40, 55));
+    mixed.cells[4].bg = crate::protocol::color_to_u32(Color::Indexed(4));
+    frames.compose(
+        &mut mixed,
+        chrome(&decorations),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert_eq!(
+        mixed.cells[4].bg,
+        crate::protocol::color_to_u32(Color::Indexed(4))
+    );
+    assert_eq!(
+        mixed.cells[0].bg,
+        crate::protocol::color_to_u32(Color::Rgb(45, 40, 55))
+    );
+
+    let mut visible = highlighted_frame(10, 1, Color::Rgb(45, 40, 55));
+    frames.compose(
+        &mut visible,
+        chrome(&decorations),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    let mut occlusion = surface::Occlusion::default();
+    occlusion.cover(Rect::new(2, 0, 1, 1));
+    let mut occluded = highlighted_frame(10, 1, Color::Rgb(45, 40, 55));
+    let retired = frames.compose(
+        &mut occluded,
+        chrome(&decorations),
+        CELL,
+        &palette,
+        &occlusion,
+    );
+    assert!(String::from_utf8_lossy(&retired).contains("a=d,d=I"));
+    assert!(occluded
+        .cells
+        .iter()
+        .all(|cell| { cell.bg == crate::protocol::color_to_u32(Color::Rgb(45, 40, 55)) }));
+
+    let partial = [SidebarDecoration::Highlight(Rect::new(5, 0, 6, 1))];
+    let mut partial_frame = highlighted_frame(10, 1, Color::Rgb(45, 40, 55));
+    frames.compose(
+        &mut partial_frame,
+        chrome(&partial),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(partial_frame
+        .cells
+        .iter()
+        .all(|cell| { cell.bg == crate::protocol::color_to_u32(Color::Rgb(45, 40, 55)) }));
+}
+
+#[test]
+fn oversized_highlight_fails_before_clearing_cell_backgrounds() {
+    let palette = fixture(0).2;
+    let decorations = [SidebarDecoration::Highlight(Rect::new(0, 0, 700, 10))];
+    let mut frame = highlighted_frame(700, 10, Color::Rgb(45, 40, 55));
+    let mut frames = PaneFrames::default();
+    frames.set_scope("oversized-highlight");
+    let bytes = frames.compose(
+        &mut frame,
+        ChromeLayout {
+            panes: &[],
+            pane_area: Rect::default(),
+            sidebar: None,
+            active_tab: None,
+            decorations: &decorations,
+        },
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(!bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
+    assert!(frame
+        .cells
+        .iter()
+        .all(|cell| { cell.bg == crate::protocol::color_to_u32(Color::Rgb(45, 40, 55)) }));
+    assert!(frames.rows.is_empty());
+}
+
+#[test]
+fn highlight_resize_focus_loss_and_scope_changes_retire_old_images() {
+    let palette = fixture(0).2;
+    let decorations = [SidebarDecoration::Highlight(Rect::new(0, 0, 10, 1))];
+    let layout = |decorations| ChromeLayout {
+        panes: &[],
+        pane_area: Rect::default(),
+        sidebar: None,
+        active_tab: None,
+        decorations,
+    };
+    let original = highlighted_frame(10, 1, Color::Rgb(45, 40, 55));
+    let mut frames = PaneFrames::default();
+    frames.set_scope("highlight-lifecycle");
+    frames.compose(
+        &mut original.clone(),
+        layout(&decorations),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    let resized = frames.compose(
+        &mut original.clone(),
+        layout(&decorations),
+        HostCellSize {
+            width_px: 18,
+            height_px: 38,
+        },
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    let resized = String::from_utf8_lossy(&resized);
+    assert!(resized.contains("a=d,d=I"), "{resized}");
+    assert!(resized.contains("s=180,v=38"), "{resized}");
+    assert_eq!(frames.sidebar_asset_rasterizations, 2);
+
+    let unfocused = frames.compose(
+        &mut original.clone(),
+        layout(&[]),
+        HostCellSize {
+            width_px: 18,
+            height_px: 38,
+        },
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    assert!(String::from_utf8_lossy(&unfocused).contains("a=d,d=I"));
+
+    frames.compose(
+        &mut original.clone(),
+        layout(&decorations),
+        CELL,
+        &palette,
+        &surface::Occlusion::default(),
+    );
+    frames.set_scope("next-highlight-scope");
+    assert!(!frames.take_pending_cleanup().is_empty());
+}
+
+#[test]
+fn sidebar_asset_cache_is_bounded_across_icons_and_highlights() {
+    use crate::ui::SidebarIcon;
+
+    let palette = fixture(0).2;
+    let decorations = (0..40)
+        .flat_map(|row| {
+            [
+                SidebarDecoration::Highlight(Rect::new(0, row, 2, 1)),
+                SidebarDecoration::Icon(SidebarIconPlacement {
+                    icon: SidebarIcon::GitBranch,
+                    rect: Rect::new(0, row, 2, 1),
+                }),
+            ]
         })
         .collect::<Vec<_>>();
     let mut buffer = Buffer::empty(Rect::new(0, 0, 2, 40));
     for row in 0..40 {
+        buffer.set_style(
+            Rect::new(0, row, 2, 1),
+            Style::default().bg(Color::Rgb(row as u8, 40, 50)),
+        );
         buffer[(0, row)]
             .set_symbol("")
             .set_fg(Color::Rgb(row as u8, 20, 30));
@@ -454,14 +892,17 @@ fn sidebar_icon_cache_is_bounded_across_branch_colors() {
             pane_area: Rect::default(),
             sidebar: None,
             active_tab: None,
-            icons: &icons,
+            decorations: &decorations,
         },
         CELL,
         &palette,
         &surface::Occlusion::default(),
     );
-    assert_eq!(frames.icon_rasterizations, 40);
-    assert_eq!(frames.icon_cache.len(), MAX_ICON_CACHE_ENTRIES);
+    assert_eq!(frames.sidebar_asset_rasterizations, 80);
+    assert_eq!(
+        frames.sidebar_asset_cache.len(),
+        MAX_SIDEBAR_ASSET_CACHE_ENTRIES
+    );
 }
 
 #[test]
@@ -661,7 +1102,7 @@ fn sidebar_rows_use_sidebar_interior_and_remain_independent_of_pane_colors() {
             pane_area: Rect::default(),
             sidebar: Some(Rect::new(1, 0, 5, 6)),
             active_tab: None,
-            icons: &[],
+            decorations: &[],
         },
         CELL,
         &palette,
@@ -963,7 +1404,7 @@ fn cached_profile_fixture(
     Rect,
     Rect,
     Rect,
-    Vec<SidebarIconPlacement>,
+    Vec<SidebarDecoration>,
 ) {
     use crate::ui::SidebarIcon;
 
@@ -973,6 +1414,10 @@ fn cached_profile_fixture(
     let mut buffer = Buffer::empty(Rect::new(0, 0, 142, 40));
     buffer.set_style(buffer.area, Style::default().bg(palette.pane_gap_bg));
     super::super::render::render_sidebar_frame(&mut buffer, sidebar, &palette);
+    buffer.set_style(
+        Rect::new(2, 9, 18, 2),
+        Style::default().bg(palette.active_row_bg),
+    );
     for (y, text, style) in [
         (4, " main", Style::default().fg(palette.overlay0)),
         (5, "  Pi", Style::default().fg(palette.text)),
@@ -981,19 +1426,23 @@ fn cached_profile_fixture(
     ] {
         put_text(&mut buffer, 3, y, 16, text, style);
     }
-    let icons = [
-        SidebarIcon::GitBranch,
-        SidebarIcon::Pi,
-        SidebarIcon::Claude,
-        SidebarIcon::Codex,
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(index, icon)| SidebarIconPlacement {
-        icon,
-        rect: Rect::new(3, 4 + index as u16, 2, 1),
-    })
-    .collect();
+    let mut decorations = vec![SidebarDecoration::Highlight(Rect::new(2, 9, 18, 2))];
+    decorations.extend(
+        [
+            SidebarIcon::GitBranch,
+            SidebarIcon::Pi,
+            SidebarIcon::Claude,
+            SidebarIcon::Codex,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, icon)| {
+            SidebarDecoration::Icon(SidebarIconPlacement {
+                icon,
+                rect: Rect::new(3, 4 + index as u16, 2, 1),
+            })
+        }),
+    );
     let mut frame = FrameData::from_ratatui_buffer(&buffer, None);
     for y in 0..40_usize {
         for x in 0..120_usize {
@@ -1007,7 +1456,7 @@ fn cached_profile_fixture(
         sidebar,
         pane_area,
         Rect::new(30, 0, 8, 1),
-        icons,
+        decorations,
     )
 }
 
@@ -1015,7 +1464,7 @@ fn cached_profile_fixture(
 #[ignore]
 fn pixel_pane_frame_render_scale_profile() {
     for count in [1, 15] {
-        let (original, panes, palette, sidebar, pane_area, active_tab, icons) =
+        let (original, panes, palette, sidebar, pane_area, active_tab, decorations) =
             cached_profile_fixture(count);
         let mut frames = PaneFrames::default();
         frames.set_scope("benchmark");
@@ -1025,10 +1474,10 @@ fn pixel_pane_frame_render_scale_profile() {
             pane_area,
             sidebar: Some(sidebar),
             active_tab: Some(active_tab),
-            icons: &icons,
+            decorations: &decorations,
         };
         frames.compose(&mut original.clone(), chrome(), CELL, &palette, &occlusion);
-        assert_eq!(frames.icon_rasterizations, 4);
+        assert_eq!(frames.sidebar_asset_rasterizations, 5);
         let mut samples = Vec::new();
         for _ in 0..101 {
             let mut frame = original.clone();
@@ -1036,12 +1485,12 @@ fn pixel_pane_frame_render_scale_profile() {
             let bytes = frames.compose(&mut frame, chrome(), CELL, &palette, &occlusion);
             samples.push(start.elapsed().as_micros());
             assert!(!bytes.windows(5).any(|bytes| bytes == b"a=t,t"));
-            assert_eq!(frames.icon_rasterizations, 4);
+            assert_eq!(frames.sidebar_asset_rasterizations, 5);
         }
         samples.sort_unstable();
         eprintln!(
-            "cached pixel borders, sidebar, tab underline, and 4 SVG icons: {count} panes, median {} us/frame; {} warm rasterizations",
-            samples[50], frames.icon_rasterizations
+            "cached pixel borders, sidebar, tab underline, 4 SVG icons, and a 2-row highlight: {count} panes, median {} us/frame; {} warm rasterizations",
+            samples[50], frames.sidebar_asset_rasterizations
         );
     }
 }

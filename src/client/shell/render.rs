@@ -255,8 +255,8 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) reveal_navigation_workspace: &'a mut bool,
     pub(super) dragged_workspace_id: Option<&'a str>,
     pub(super) workspace_drop_indicator_row: Option<u16>,
-    pub(super) pixel_icons: bool,
-    pub(super) sidebar_icons: &'a mut Vec<super::pane_frames::SidebarIconPlacement>,
+    pub(super) pixel_sidebar: bool,
+    pub(super) sidebar_decorations: &'a mut Vec<super::pane_frames::SidebarDecoration>,
 }
 
 pub(super) fn render_shell(
