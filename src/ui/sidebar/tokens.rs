@@ -20,6 +20,19 @@ impl SidebarIcon {
             _ => None,
         }
     }
+
+    pub(crate) fn pixel_viewport(
+        self,
+        provider_viewport: u32,
+        slot_width: u32,
+        slot_height: u32,
+    ) -> u32 {
+        let viewport = match self {
+            Self::GitBranch => provider_viewport.saturating_mul(24) / 18 / 2 * 2,
+            Self::Pi | Self::Claude | Self::Codex => provider_viewport,
+        };
+        viewport.min(slot_width).min(slot_height)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

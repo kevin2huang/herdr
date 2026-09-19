@@ -77,6 +77,51 @@ fn host_appearance_prefers_explicit_reports_over_background_inference() {
 }
 
 #[test]
+fn host_default_and_palette_colors_update_the_client_theme() {
+    use crate::terminal_theme::{DefaultColorKind, RgbColor};
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    let outcome = state.handle_raw_events(vec![
+        RawInputEvent::HostDefaultColor {
+            kind: DefaultColorKind::Foreground,
+            color: RgbColor { r: 1, g: 2, b: 3 },
+        },
+        RawInputEvent::HostDefaultColor {
+            kind: DefaultColorKind::Background,
+            color: RgbColor { r: 4, g: 5, b: 6 },
+        },
+        RawInputEvent::HostPaletteColors {
+            colors: vec![(
+                7,
+                RgbColor {
+                    r: 200,
+                    g: 201,
+                    b: 202,
+                },
+            )],
+        },
+    ]);
+
+    assert!(outcome.repaint);
+    assert_eq!(
+        state.host_theme.foreground,
+        Some(RgbColor { r: 1, g: 2, b: 3 })
+    );
+    assert_eq!(
+        state.host_theme.background,
+        Some(RgbColor { r: 4, g: 5, b: 6 })
+    );
+    assert_eq!(
+        state.host_theme.palette[7],
+        Some(RgbColor {
+            r: 200,
+            g: 201,
+            b: 202
+        })
+    );
+}
+
+#[test]
 fn full_host_palette_response_is_sent_as_one_theme_update() {
     use std::fmt::Write as _;
 

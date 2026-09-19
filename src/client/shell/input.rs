@@ -267,15 +267,22 @@ impl ClientShellState {
                         outcome.repaint = true;
                     }
                 }
-                RawInputEvent::HostDefaultColor {
-                    kind: crate::terminal_theme::DefaultColorKind::Background,
-                    color,
-                } => {
-                    if self.host_background != Some(color) {
-                        self.host_background = Some(color);
+                RawInputEvent::HostDefaultColor { kind, color } => {
+                    let current = match kind {
+                        crate::terminal_theme::DefaultColorKind::Foreground => {
+                            &mut self.host_theme.foreground
+                        }
+                        crate::terminal_theme::DefaultColorKind::Background => {
+                            &mut self.host_theme.background
+                        }
+                    };
+                    if *current != Some(color) {
+                        *current = Some(color);
                         outcome.repaint = true;
                     }
-                    if !self.host_appearance_explicit {
+                    if kind == crate::terminal_theme::DefaultColorKind::Background
+                        && !self.host_appearance_explicit
+                    {
                         let appearance = color.inferred_appearance();
                         self.host_appearance = Some(appearance);
                         if self.config.theme_runtime.auto_switch {
@@ -287,10 +294,16 @@ impl ClientShellState {
                         }
                     }
                 }
-                RawInputEvent::HostDefaultColor { .. }
-                | RawInputEvent::HostPaletteColors { .. }
-                | RawInputEvent::HostCellSizeReport { .. }
-                | RawInputEvent::Unsupported => {}
+                RawInputEvent::HostPaletteColors { colors } => {
+                    for (index, color) in colors {
+                        let current = &mut self.host_theme.palette[usize::from(index)];
+                        if *current != Some(color) {
+                            *current = Some(color);
+                            outcome.repaint = true;
+                        }
+                    }
+                }
+                RawInputEvent::HostCellSizeReport { .. } | RawInputEvent::Unsupported => {}
             }
             self.reconcile_input_source();
         }

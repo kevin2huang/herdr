@@ -75,6 +75,57 @@ fn disabled_pixel_chrome_preserves_font_underlines_and_retires_images() {
 }
 
 #[test]
+fn terminal_palette_late_arrival_repaints_and_upgrades_focused_branch_icon() {
+    use crate::terminal_theme::RgbColor;
+
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.palette = Palette::terminal();
+    config.pixel_pane_borders = true;
+    config.theme_runtime.auto_switch = false;
+    let mut state = ClientShellState::new(config);
+    state.set_graphics_cell_size(17, 36);
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+
+    let fallback = state.compose(106, 30).expect("fallback frame");
+    let branch_index = fallback
+        .cells
+        .iter()
+        .position(|cell| cell.symbol == "")
+        .expect("Powerline branch fallback");
+    assert_eq!(
+        crate::protocol::u32_to_color(fallback.cells[branch_index].fg),
+        Color::Gray
+    );
+    assert!(uploaded_sidebar_icon_pixels(&fallback).is_empty());
+
+    let outcome = state.handle_raw_events(vec![RawInputEvent::HostPaletteColors {
+        colors: vec![(
+            7,
+            RgbColor {
+                r: 200,
+                g: 201,
+                b: 202,
+            },
+        )],
+    }]);
+    assert!(outcome.repaint);
+
+    let upgraded = state.compose(106, 30).expect("palette-colored frame");
+    assert_eq!(upgraded.cells[branch_index].symbol, " ");
+    let icons = uploaded_sidebar_icon_pixels(&upgraded);
+    assert_eq!(icons.len(), 1);
+    let expected = crate::platform::ghostty_image_color([200, 201, 202]);
+    assert!(icons[0]
+        .chunks_exact(4)
+        .filter(|pixel| pixel[3] == 255)
+        .all(|pixel| pixel[..3] == expected));
+    assert!(icons[0]
+        .chunks_exact(4)
+        .any(|pixel| pixel[3] == 255 && pixel[..3] == expected));
+}
+
+#[test]
 fn custom_dim_branch_keeps_the_styled_powerline_fallback() {
     let config: Config = toml::from_str(
         r##"

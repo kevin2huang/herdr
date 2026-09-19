@@ -425,7 +425,7 @@ impl ClientShellState {
                                 Color::Rgb(r, g, b) => {
                                     Some(crate::terminal_theme::RgbColor { r, g, b })
                                 }
-                                _ => self.host_background,
+                                _ => self.host_theme.background,
                             },
                             ..Default::default()
                         },

@@ -110,12 +110,42 @@ pub(super) struct ChromeLayout<'a> {
     pub(super) sidebar: Option<Rect>,
     pub(super) active_tab: Option<Rect>,
     pub(super) decorations: &'a [SidebarDecoration],
+    pub(super) host_theme: &'a crate::terminal_theme::TerminalTheme,
 }
 
 const CORNER_RADIUS_PX: u32 = 12;
 const HIGHLIGHT_RADIUS_PX: u32 = 6;
 const HIGHLIGHT_VERTICAL_INSET_PX: u32 = 2;
 const MAX_SIDEBAR_ASSET_CACHE_ENTRIES: usize = 32;
+
+fn host_rgb(
+    color: Color,
+    theme: &crate::terminal_theme::TerminalTheme,
+    default: Option<crate::terminal_theme::RgbColor>,
+) -> Option<[u8; 3]> {
+    let color = match color {
+        Color::Rgb(red, green, blue) => return Some([red, green, blue]),
+        Color::Indexed(index) => theme.palette[usize::from(index)]?,
+        Color::Reset => default?,
+        Color::Black => theme.palette[0]?,
+        Color::Red => theme.palette[1]?,
+        Color::Green => theme.palette[2]?,
+        Color::Yellow => theme.palette[3]?,
+        Color::Blue => theme.palette[4]?,
+        Color::Magenta => theme.palette[5]?,
+        Color::Cyan => theme.palette[6]?,
+        Color::Gray => theme.palette[7]?,
+        Color::DarkGray => theme.palette[8]?,
+        Color::LightRed => theme.palette[9]?,
+        Color::LightGreen => theme.palette[10]?,
+        Color::LightYellow => theme.palette[11]?,
+        Color::LightBlue => theme.palette[12]?,
+        Color::LightMagenta => theme.palette[13]?,
+        Color::LightCyan => theme.palette[14]?,
+        Color::White => theme.palette[15]?,
+    };
+    Some([color.r, color.g, color.b])
+}
 
 pub(super) fn pixel_chrome_available(enabled: bool, cell: HostCellSize) -> bool {
     enabled
@@ -283,7 +313,11 @@ impl IconRow {
         if len.is_none_or(|len| len > 4 * 1024 * 1024) {
             return Err(io::Error::other("sidebar icon image exceeds 4 MiB"));
         }
-        let viewport = (height.saturating_mul(5).saturating_add(4) / 9).min(width);
+        let provider_viewport = (height.saturating_mul(5).saturating_add(4) / 9).min(width);
+        let viewport = self
+            .placement
+            .icon
+            .pixel_viewport(provider_viewport, width, height);
         if viewport == 0 {
             return Err(io::Error::other("invalid sidebar icon viewport"));
         }
@@ -682,12 +716,14 @@ impl PaneFrames {
                         if branch_cell.modifier & Modifier::DIM.bits() != 0 {
                             continue;
                         }
-                        let Color::Rgb(red, green, blue) =
-                            crate::protocol::u32_to_color(branch_cell.fg)
-                        else {
+                        let Some(color) = host_rgb(
+                            crate::protocol::u32_to_color(branch_cell.fg),
+                            layout.host_theme,
+                            layout.host_theme.foreground,
+                        ) else {
                             continue;
                         };
-                        Some([red, green, blue])
+                        Some(color)
                     } else {
                         None
                     };
@@ -725,7 +761,12 @@ impl PaneFrames {
                     if !representable {
                         continue;
                     }
-                    let Color::Rgb(red, green, blue) = crate::protocol::u32_to_color(background)
+                    let background = crate::protocol::u32_to_color(background);
+                    if background == Color::Reset {
+                        continue;
+                    }
+                    let Some(fill) =
+                        host_rgb(background, layout.host_theme, layout.host_theme.background)
                     else {
                         continue;
                     };
@@ -733,7 +774,7 @@ impl PaneFrames {
                         rect: *rect,
                         cell_width: cell.width_px,
                         cell_height: cell.height_px,
-                        fill: [red, green, blue],
+                        fill,
                     }));
                 }
             }
